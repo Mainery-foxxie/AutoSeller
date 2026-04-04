@@ -27,12 +27,12 @@
 ### Termux (Android)
 pkg update && pkg upgrade
 pkg install python git
-git clone https://github.com/Mainery-foxxie/AutoSeller/blob/main/README.md
+git clone https://github.com/Mainery-foxxie/AutoSeller
 cd AutoSeller
 pip install -r requirements.txt
 
 ### Windows / macOS / Linux
-git clone https://github.com/Mainery-foxxie/AutoSeller/blob/main/README.md
+git clone https://github.com/Mainery-foxxie/AutoSeller
 cd AutoSeller
 python -m venv venv
 source venv/bin/activate   # or venv\Scripts\activate on Windows
