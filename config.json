@@ -1,6 +1,6 @@
 {
     "Cookie": "",
-    "Discord_Rich_Presence": true,
+    "Discord_Rich_Presence": false,
     "Debug": true,
 
     "Discord_Bot": {
