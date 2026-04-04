@@ -1,6 +1,7 @@
 {
     "Cookie": "",
-    "Discord_Rich_Presence": true,
+    "Discord_Rich_Presence": false,
+    "Debug": true,
 
     "Discord_Bot": {
         "Enabled": false,
@@ -29,8 +30,7 @@
         "Creators_Blacklist": [],
         "Under_Cut": {
             "Type": "percent",
-            "Value": 5
+            "Value": 1
         }
     }
 }
-
