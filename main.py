@@ -198,7 +198,7 @@ class AutoSeller(ConfigLoader):
             debug_print(f"Error fetching lowest price for {item_id}: {e}")
         return None
 
-    # ---------- SELL ITEM - respects config ----------
+    # ---------- SELL ITEM (no automatic blacklist) ----------
     async def sell_item(self):
         item = self.current
         debug_print(f"Selling item: {item.name} (ID {item.id})")
@@ -212,27 +212,21 @@ class AutoSeller(ConfigLoader):
 
         # 2. Determine target price
         if current_lowest and current_lowest > 0:
-            # Competition exists: apply undercut from config
             if self.under_cut_type == "percent":
                 undercut_amount = int(current_lowest * (self.under_cut_amount / 100))
                 target_price = current_lowest - undercut_amount
-            else:  # "robux" or fixed amount
+            else:
                 target_price = current_lowest - self.under_cut_amount
-
-            # Ensure not below absolute minimum (5 Robux)
             if target_price < 5:
                 target_price = 5
-
             debug_print(f"Competition found ({current_lowest}), applied {self.under_cut_amount}{'%' if self.under_cut_type == 'percent' else ' Robux'} undercut → {target_price}")
         else:
-            # No competition: use the user-defined default price
             target_price = self.default_price_no_competition
             debug_print(f"No competition, using Default_Price_No_Competition from config: {target_price}")
 
-        # Update item price
         item.price_to_sell = target_price
 
-        # 3. Attempt to sell with retry on rate limit
+        # 3. Attempt to sell
         max_retries = 3
         sold_amount = None
         for attempt in range(max_retries):
@@ -257,15 +251,14 @@ class AutoSeller(ConfigLoader):
                     debug_print(f"Rate limited! Waiting {wait} seconds...")
                     await asyncio.sleep(wait)
                 elif "412" in error_msg or "precondition failed" in error_msg:
-                    debug_print(f"Item {item.id} returned 412 – blacklisting.")
-                    self.blacklist.add(item.id)
-                    self.remove_item(item.id)
+                    debug_print(f"Item {item.id} returned 412 – not sellable. Skipping (no auto-blacklist).")
+                    # No automatic blacklist
                     break
                 else:
                     debug_print(f"Unexpected error: {e}")
                     break
 
-        # 4. Random delay between items
+        # 4. Random delay
         delay = random.uniform(2, 5)
         debug_print(f"Waiting {delay:.1f} seconds before next item...")
         await asyncio.sleep(delay)
@@ -363,9 +356,10 @@ class AutoSeller(ConfigLoader):
                     self.current.price_to_sell = int(new_price)
                     Display.success(f"Successfully set a new price to sell! ([g${self.current.price_to_sell}])")
                 case "3":
+                    # Manual blacklist
                     self.blacklist.add(self.current.id)
                     self.next_item()
-                    Display.success(f"Successfully added [g{self.current.name} ({self.current.id})] into a blacklist!")
+                    Display.success(f"Successfully added [g{self.current.name} ({self.current.id})] into blacklist!")
                 case "4":
                     if self.save_progress:
                         self.seen.add(self.current.id)
@@ -407,10 +401,8 @@ class AutoSeller(ConfigLoader):
                     continue
                 asset_cap = items_cap.get(asset_type, {}).get("priceFloor", 5)
 
-                # Determine initial price based on competition
                 lowest_resale = item_details.get("lowestResalePrice")
                 if lowest_resale and lowest_resale > 0:
-                    # Competition exists: apply undercut
                     if self.under_cut_type == "percent":
                         undercut_amount = int(lowest_resale * (self.under_cut_amount / 100))
                         sell_price = lowest_resale - undercut_amount
@@ -419,7 +411,6 @@ class AutoSeller(ConfigLoader):
                     if sell_price < asset_cap:
                         sell_price = asset_cap
                 else:
-                    # No competition: use default price from config
                     sell_price = self.default_price_no_competition
 
                 item_obj = Item(item, item_details, price_to_sell=sell_price, thumbnail=thumbnail, auth=self.auth)
