@@ -7,13 +7,12 @@ import asyncio
 import random
 
 # ========== DEBUG MODE (controlled by config.json) ==========
-DEBUG = True   # will be overridden by config value in main()
-PURPLE = '\033[95m'   # purple color
-RESET = '\033[0m'     # reset to default
+DEBUG = True
+PURPLE = '\033[95m'
+RESET = '\033[0m'
 
 def debug_print(*args, **kwargs):
     if DEBUG:
-        # Print in purple
         print(PURPLE, "[DEBUG]", *args, RESET, **kwargs)
 # =============================================================
 
@@ -57,35 +56,44 @@ except ModuleNotFoundError as e:
 
 __all__ = ("AutoSeller",)
 
-# ==================== FALLBACK get_current_cap ====================
+# ==================== FIXED get_current_cap ====================
 async def get_current_cap(auth):
+    """
+    Fetch price floor (minimum resale price) for each asset type.
+    Uses the official Roblox API: https://economy.roblox.com/v1/assets/price-floor
+    Returns dict: {asset_type_name: {"priceFloor": int}}
+    """
     from core.constants import ITEM_TYPES
-    endpoints = [
-        "https://economy.roblox.com/v1/assets/price-floor",
-        "https://economy.roblox.com/v2/assets/price-floor",
-        "https://catalog.roblox.com/v1/price-floors"
-    ]
-    for endpoint in endpoints:
-        try:
-            async with auth.get(endpoint) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    if isinstance(data, dict):
-                        caps = {}
-                        for asset_type_id, price_floor in data.items():
-                            for name, type_id in ITEM_TYPES.items():
-                                if str(type_id) == str(asset_type_id):
-                                    caps[name] = {"priceFloor": price_floor}
-                                    break
-                        if caps:
-                            return caps
-        except:
-            continue
-    # Fallback: 5 Robux floor for all types
+
+    # Known working endpoint
+    url = "https://economy.roblox.com/v1/assets/price-floor"
+    try:
+        async with auth.get(url) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                # data is like {"1": 5, "2": 10, "3": 15, ...} where keys are assetTypeId (as strings)
+                caps = {}
+                for asset_type_id_str, floor in data.items():
+                    asset_type_id = int(asset_type_id_str)
+                    for name, type_id in ITEM_TYPES.items():
+                        if type_id == asset_type_id:
+                            caps[name] = {"priceFloor": floor}
+                            break
+                if caps:
+                    debug_print(f"Fetched price floors: {caps}")
+                    return caps
+                else:
+                    debug_print("No matching asset types found in price floor response")
+            else:
+                debug_print(f"Price floor API returned {resp.status}")
+    except Exception as e:
+        debug_print(f"Error fetching price floor: {e}")
+
+    # Fallback: use a default floor of 5 Robux for all types
+    debug_print("Using fallback price floor of 5 Robux for all types")
     caps = {}
     for asset_type_name in ITEM_TYPES.values():
         caps[asset_type_name] = {"priceFloor": 5}
-    debug_print("Using fallback caps (price floor = 5)")
     return caps
 
 import core.main_tools
@@ -183,8 +191,9 @@ class AutoSeller(ConfigLoader):
                 self.not_resable.add(item_id)
                 self.remove_item(item_id)
 
-    # ---------- Get current lowest market price ----------
+    # ---------- FIXED: Get current lowest price with better error handling ----------
     async def get_current_lowest_price(self, item_id: int) -> Optional[int]:
+        """Fetch the lowest resale price for an item. Returns None if no resellers or error."""
         url = f"https://economy.roblox.com/v1/assets/{item_id}/resellers"
         try:
             async with self.auth.get(url) as resp:
@@ -192,11 +201,13 @@ class AutoSeller(ConfigLoader):
                     data = await resp.json()
                     if data.get("data") and len(data["data"]) > 0:
                         return data["data"][0].get("price", 0)
-        except:
-            pass
+                else:
+                    debug_print(f"Resellers API returned {resp.status} for item {item_id}")
+        except Exception as e:
+            debug_print(f"Error fetching lowest price for {item_id}: {e}")
         return None
 
-    # ---------- Improved sell_item with relogic & delays ----------
+    # ---------- FIXED sell_item: no crazy 1000 Robux ----------
     async def sell_item(self):
         item = self.current
         debug_print(f"Selling item: {item.name} (ID {item.id})")
@@ -204,27 +215,33 @@ class AutoSeller(ConfigLoader):
             f"Selling [g{len(item.collectibles)}x] of [g{item.name}] items...",
             "selling", Color(255, 153, 0))
 
-        # 1. Check current market price
+        # 1. Check current market price (lowest resale)
         current_lowest = await self.get_current_lowest_price(item.id)
         debug_print(f"Current lowest price on market: {current_lowest}")
 
-        # 2. If our price is higher than market, lower it (relist)
-        if current_lowest and item.price_to_sell > current_lowest:
-            debug_print(f"Our price {item.price_to_sell} > market {current_lowest}, lowering to match")
-            item.price_to_sell = current_lowest - 1
-            if item.price_to_sell < 5:
-                item.price_to_sell = 5
+        # 2. Determine the target price
+        if current_lowest and current_lowest > 0:
+            # There is competition: undercut by 1 Robux (or use your undercut settings)
+            target_price = current_lowest - 1
+            if target_price < 5:
+                target_price = 5
+            debug_print(f"Competition found, setting price to {target_price} (undercut from {current_lowest})")
+        else:
+            # No competition: use the price floor + undercut from the original calculation
+            # The price_to_sell was already set during item loading using define_sale_price()
+            target_price = item.price_to_sell
+            debug_print(f"No competition, using calculated price: {target_price} (based on floor and undercut)")
 
-        # 3. If no competition, set to fallback price (1000 Robux)
-        elif not current_lowest or current_lowest == 0:
-            fallback_price = 1000   # change as you wish
-            if item.price_to_sell != fallback_price:
-                debug_print(f"No competition, setting price to {fallback_price} Robux")
-                item.price_to_sell = fallback_price
+        # Ensure price is not below absolute minimum (5 Robux)
+        if target_price < 5:
+            target_price = 5
 
-        # 4. Attempt to sell with retry on rate limit
-        max_retries = 5
-        sold = False
+        # Update the item's price to sell
+        item.price_to_sell = target_price
+
+        # 3. Attempt to sell with retry on rate limit
+        max_retries = 3
+        sold_amount = None
         for attempt in range(max_retries):
             try:
                 sold_amount = await item.sell_collectibles(
@@ -237,10 +254,9 @@ class AutoSeller(ConfigLoader):
                         self.total_sold += sold_amount
                         if self.sale_webhook:
                             asyncio.create_task(self.send_sale_webhook(item, sold_amount))
-                        sold = True
                     break
                 else:
-                    # None means no sale happened (maybe already on sale)
+                    # No sale happened (maybe already on sale or error)
                     break
             except Exception as e:
                 error_msg = str(e).lower()
@@ -248,21 +264,26 @@ class AutoSeller(ConfigLoader):
                     wait = 30 * (attempt + 1)
                     debug_print(f"Rate limited! Waiting {wait} seconds...")
                     await asyncio.sleep(wait)
+                elif "412" in error_msg or "precondition failed" in error_msg:
+                    debug_print(f"Item {item.id} returned 412 – likely not sellable. Blacklisting.")
+                    self.blacklist.add(item.id)
+                    self.remove_item(item.id)
+                    break
                 else:
                     debug_print(f"Unexpected error: {e}")
                     break
 
-        # 5. Random delay between items to avoid rate limits
-        delay = random.uniform(3, 7)
+        # 4. Random delay between items
+        delay = random.uniform(2, 5)
         debug_print(f"Waiting {delay:.1f} seconds before next item...")
         await asyncio.sleep(delay)
 
-        # 6. Mark as seen and move to next
-        if self.save_progress:
+        # 5. Mark as seen and move to next (unless we blacklisted it and removed it)
+        if self.save_progress and item.id in self._items:
             self.seen.add(item.id)
         self.next_item()
 
-    # ---------- The rest of the class (original, unchanged) ----------
+    # ---------- The rest of the class (unchanged) ----------
     def fetch_item_info(self, *, step_index: int = 1) -> Optional[Iterable[Task]]:
         try:
             item = self.items[self.current_index + step_index]
@@ -475,7 +496,6 @@ async def main() -> None:
     Display.info("Loading config")
     config = load_file("config.json")
 
-    # Set debug mode from config.json
     DEBUG = config.get("Debug", False)
     debug_print(f"Debug mode: {'ON' if DEBUG else 'OFF'}")
 
