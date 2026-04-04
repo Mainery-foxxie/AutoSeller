@@ -45,7 +45,7 @@ pip install -r requirements.txt
 ## ⚙️ Configuration (`config.json`)
 
 Create a `config.json` file in the root folder with the following structure:
-
+```json
 {
     "Cookie": "YOUR_ROBLOX_COOKIE_HERE",
     "Discord_Rich_Presence": true,
@@ -82,7 +82,7 @@ Create a `config.json` file in the root folder with the following structure:
             "Value": 1
         }
     }
-}
+}```
 
 ### Explanation of each field
 
