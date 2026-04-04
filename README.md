@@ -1,8 +1,6 @@
 # AutoSeller – Roblox UGC Limited Seller
 
 [![Python Version](https://img.shields.io/badge/python-3.9%2B-blue)](https://www.python.org/downloads/)
-[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-
 **AutoSeller** is the #1 tool to automatically sell your Roblox UGC Limited items with smart undercutting, rate‑limit handling, and optional Discord rich presence & webhooks.
 
 ![Preview](https://github.com/user-attachments/assets/eeaa7337-bf2d-4fcd-a2ac-5502549599f3)
