@@ -12,6 +12,7 @@ class ConfigLoader:
 
     def __init__(self, config: dict):
         self.presence_enabled = config["Discord_Rich_Presence"]
+        self.debug = config.get("Debug", False)
 
         discord_bot = config["Discord_Bot"]
         self.discord_bot = discord_bot.get("Enabled", False)
@@ -39,6 +40,7 @@ class ConfigLoader:
         self.keep_serials = auto_sell.get("Keep_Serials", 0)
         self.keep_copy = auto_sell.get("Keep_Copy", 0)
         self.creators_blacklist = auto_sell.get("Creators_Blacklist", [])
+        self.default_price_no_competition = auto_sell.get("Default_Price_No_Competition", 1000)   # <-- KEY FIX
 
         under_cut = auto_sell["Under_Cut"]
         self.under_cut_type = under_cut.get("Type", "percent").strip()
@@ -48,23 +50,15 @@ class ConfigLoader:
         if self.discord_bot:
             if not self.bot_token:
                 return Display.exception("Invalid discord bot token provided")
-
             elif not self.bot_prefix:
                 return Display.exception("Discord bot prefix can not be empty")
-
-        elif (self.buy_webhook and
-              not await is_webhook_exists(self.buy_webhook_url)):
+        elif (self.buy_webhook and not await is_webhook_exists(self.buy_webhook_url)):
             return Display.exception("Invalid on buy webhook url provided")
-
-        elif (self.sale_webhook and
-              not await is_webhook_exists(self.sale_webhook_url)):
+        elif (self.sale_webhook and not await is_webhook_exists(self.sale_webhook_url)):
             return Display.exception("Invalid on sale webhook url provided")
-
         elif self.under_cut_type not in self.under_cut_types:
             return Display.exception(f"Invalid under cut type provided, must be: {self.under_cut_types}")
-
         elif self.sort_items_by not in self.sort_items_types:
             return Display.exception(f"Invalid sort items type provided, must be: {self.sort_items_types}")
-
         elif self.under_cut_amount < 0:
             return Display.exception("Under cut amount can not be less than 0")
