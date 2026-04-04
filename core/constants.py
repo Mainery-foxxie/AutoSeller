@@ -24,5 +24,5 @@ ITEM_TYPES = {8: "Hat", 41: "HairAccessory", 42: "FaceAccessory", 43: "NeckAcces
               44: "ShoulderAccessory", 45: "FrontAccessory", 46: "BackAccessory",
               47: "WaistAccessory", 64: "TShirtAccessory", 65: "ShirtAccessory",
               66: "PantsAccessory", 67: "JacketAccessory", 68: "SweaterAccessory",
-              69: "ShortsAccessory", 72: "DressSkirtAccessory"}
+              69: "ShortsAccessory", 72: "DressSkirtAccessory", 61: "Emote"}
 PRESENCE_BOT_ID = 1399802221142605836
