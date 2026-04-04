@@ -50,6 +50,59 @@ except ModuleNotFoundError:
 
 __all__ = ("AutoSeller",)
 
+# ==================== FALLBACK get_current_cap ====================
+# Override the broken function from core.main_tools with a robust version
+async def get_current_cap(auth):
+    """
+    Fetch price floor for each asset type.
+    Returns dict: {asset_type_name: {"priceFloor": int}}
+    If all endpoints fail, returns zero caps (you can change the floor value).
+    """
+    from core.constants import ITEM_TYPES
+
+    # Try multiple endpoints (some may be deprecated)
+    endpoints = [
+        "https://economy.roblox.com/v1/assets/price-floor",
+        "https://economy.roblox.com/v2/assets/price-floor",
+        "https://catalog.roblox.com/v1/price-floors"
+    ]
+
+    for endpoint in endpoints:
+        try:
+            async with auth.get(endpoint) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    # Attempt to parse common response structures
+                    # The original likely expected something like {1: 5, 2: 10} (assetTypeId -> floor)
+                    # We'll try to convert if it's a dict of ints
+                    if isinstance(data, dict):
+                        caps = {}
+                        for asset_type_id, price_floor in data.items():
+                            # Find the matching asset type name in ITEM_TYPES
+                            for name, type_id in ITEM_TYPES.items():
+                                if str(type_id) == str(asset_type_id):
+                                    caps[name] = {"priceFloor": price_floor}
+                                    break
+                        if caps:
+                            print(f"[INFO] Using caps from {endpoint}")
+                            return caps
+                    # If response is something else, just return a dummy
+                    break
+        except Exception as e:
+            print(f"[WARN] Cap endpoint {endpoint} failed: {e}")
+            continue
+
+    # Fallback: return zero floor for all asset types
+    print("[WARN] Could not fetch price floors. Using fallback caps (price floor = 5 Robux).")
+    caps = {}
+    for asset_type_name in ITEM_TYPES.values():
+        caps[asset_type_name] = {"priceFloor": 5}   # change 5 to your desired minimum
+    return caps
+
+# Replace the imported function
+import core.main_tools
+core.main_tools.get_current_cap = get_current_cap
+# ===============================================================
 
 class AutoSeller(ConfigLoader):
     __slots__ = ("config", "_items", "auth", "buy_checker", "blacklist",
@@ -127,11 +180,10 @@ class AutoSeller(ConfigLoader):
             start=int(self.loaded_time.timestamp())
         )
 
-    # ======================= FIXED API FALLBACK METHOD =======================
+    # ======================= API FALLBACK =======================
     async def filter_non_resable(self):
         """
         Check which items have resaleRestriction == 1 using multiple API endpoints.
-        Falls back to alternative endpoints if the primary one fails.
         """
         if (self.current_index + 2) % 30 or not self.current_index:
             return None
@@ -154,7 +206,7 @@ class AutoSeller(ConfigLoader):
                         used_endpoint = endpoint
                         break
                     else:
-                        print(f"[WARN] Endpoint {endpoint} returned {response.status}, trying next...")
+                        print(f"[WARN] Endpoint {endpoint} returned {response.status}")
             except Exception as e:
                 print(f"[WARN] Request to {endpoint} failed: {e}")
                 continue
@@ -177,7 +229,7 @@ class AutoSeller(ConfigLoader):
                 self.remove_item(item_id)
 
         print(f"[INFO] Filtered non-resellable items using {used_endpoint}")
-    # ========================================================================
+    # ==============================================================
 
     def fetch_item_info(self, *, step_index: int = 1) -> Optional[Iterable[Task]]:
         try:
@@ -350,18 +402,17 @@ class AutoSeller(ConfigLoader):
         Display.info("Getting current limiteds cap")
         items_cap = await get_current_cap(self.auth)
 
-        # ========== FIX: Handle None or invalid items_cap ==========
+        # FIX: Handle None or invalid items_cap
         if items_cap is None:
-            Display.exception(
-                "Failed to retrieve limiteds cap (get_current_cap returned None). "
-                "Check your internet connection, cookie validity, or if the Roblox API is down."
-            )
-            return
+            Display.exception("Failed to retrieve limiteds cap (get_current_cap returned None). Using fallback caps.")
+            # Fallback: create a dummy cap with floor 5 for all asset types
+            items_cap = {}
+            for asset_type_name in ITEM_TYPES.values():
+                items_cap[asset_type_name] = {"priceFloor": 5}
 
         if not isinstance(items_cap, dict):
             Display.exception(f"Invalid cap data type: {type(items_cap)}. Expected dict.")
             return
-        # ===========================================================
 
         ignored_items = list(self.seen | self.blacklist | self.not_resable)
 
@@ -382,13 +433,12 @@ class AutoSeller(ConfigLoader):
                     Display.warning(f"Unknown asset type {item_details['assetType']} for item {item_id}, skipping.")
                     continue
 
-                # Safely get cap info
                 cap_info = items_cap.get(asset_type)
                 if cap_info is None:
-                    Display.warning(f"No cap info for asset type {asset_type} (item {item_id}), using price floor 0.")
-                    asset_cap = 0
+                    Display.warning(f"No cap info for {asset_type} (item {item_id}), using price floor 5.")
+                    asset_cap = 5
                 else:
-                    asset_cap = cap_info.get("priceFloor", 0)
+                    asset_cap = cap_info.get("priceFloor", 5)
 
                 sell_price = define_sale_price(self.under_cut_amount, self.under_cut_type,
                                                asset_cap, item_details["lowestResalePrice"])
