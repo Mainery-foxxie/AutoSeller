@@ -59,17 +59,8 @@ __all__ = ("AutoSeller",)
 
 # ==================== AUTOMATIC FLOOR DETECTION ====================
 async def get_current_cap(auth):
-    """
-    Fetch price floor for each asset type using multiple methods:
-    1. Official Roblox price-floor API.
-    2. If that fails, scan your own on-sale items to infer the floor.
-    3. Fallback to reasonable defaults (emote=25, hat=50, etc.)
-    """
     from core.constants import ITEM_TYPES
-
     caps = {}
-    
-    # First, try the official API for all types
     for asset_type_name, asset_type_id in ITEM_TYPES.items():
         url = f"https://economy.roblox.com/v1/assets/price-floor?assetTypeId={asset_type_id}"
         try:
@@ -84,14 +75,10 @@ async def get_current_cap(auth):
                         continue
         except:
             pass
-        # If we reach here, official API gave 0 or error
-        caps[asset_type_name] = None  # mark as unknown
+        caps[asset_type_name] = None
 
-    # Second, scan your own inventory for items that are on sale
-    # to infer the floor price for missing types
     debug_print("Fetching your own on-sale items to infer floors...")
     try:
-        # Get your user ID
         user_id = auth.user_id
         url = f"https://economy.roblox.com/v1/users/{user_id}/resellable-items?limit=100"
         async with auth.get(url) as resp:
@@ -102,7 +89,6 @@ async def get_current_cap(auth):
                     price = item.get("price", 0)
                     if price <= 0:
                         continue
-                    # Find asset type name
                     for name, type_id in ITEM_TYPES.items():
                         if type_id == asset_type_id:
                             if caps.get(name) is None or caps[name]["priceFloor"] > price:
@@ -111,24 +97,12 @@ async def get_current_cap(auth):
     except Exception as e:
         debug_print(f"Failed to scan your own items: {e}")
 
-    # Third, fill any missing caps with sensible defaults
     default_floors = {
-        "Emote": 25,
-        "Hat": 50,
-        "HairAccessory": 50,
-        "FaceAccessory": 50,
-        "NeckAccessory": 50,
-        "ShoulderAccessory": 100,
-        "FrontAccessory": 50,
-        "BackAccessory": 100,
-        "WaistAccessory": 50,
-        "TShirtAccessory": 5,
-        "ShirtAccessory": 5,
-        "PantsAccessory": 5,
-        "JacketAccessory": 5,
-        "SweaterAccessory": 5,
-        "ShortsAccessory": 5,
-        "DressSkirtAccessory": 5,
+        "Emote": 25, "Hat": 50, "HairAccessory": 50, "FaceAccessory": 50,
+        "NeckAccessory": 50, "ShoulderAccessory": 100, "FrontAccessory": 50,
+        "BackAccessory": 100, "WaistAccessory": 50, "TShirtAccessory": 5,
+        "ShirtAccessory": 5, "PantsAccessory": 5, "JacketAccessory": 5,
+        "SweaterAccessory": 5, "ShortsAccessory": 5, "DressSkirtAccessory": 5,
     }
     for asset_type_name in ITEM_TYPES.values():
         if caps.get(asset_type_name) is None:
@@ -232,20 +206,69 @@ class AutoSeller(ConfigLoader):
                 self.not_resable.add(item_id)
                 self.remove_item(item_id)
 
-    async def get_current_lowest_price(self, item_id: int) -> Optional[int]:
-        url = f"https://economy.roblox.com/v1/assets/{item_id}/resellers"
+    # ========== MULTI‑API LOWEST PRICE CHECK ==========
+    async def get_lowest_price_multi(self, item_id: int, item_obj: Optional[Item] = None) -> Optional[int]:
+        """
+        Try multiple endpoints to get the current lowest resale price.
+        Returns the lowest price found, or None if none.
+        """
+        prices = []
+
+        # 1. Use item's stored lowest_resale_price (from inventory details)
+        if item_obj and item_obj.lowest_resale_price and item_obj.lowest_resale_price > 0:
+            prices.append(item_obj.lowest_resale_price)
+            debug_print(f"Stored lowest_resale_price: {item_obj.lowest_resale_price}")
+
+        # 2. Try economy.roblox.com API
+        url1 = f"https://economy.roblox.com/v1/assets/{item_id}/resellers"
         try:
-            async with self.auth.get(url) as resp:
+            async with self.auth.get(url1) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     if data.get("data") and len(data["data"]) > 0:
-                        return data["data"][0].get("price", 0)
-                else:
-                    debug_print(f"Resellers API returned {resp.status} for item {item_id}")
+                        price = data["data"][0].get("price", 0)
+                        if price > 0:
+                            prices.append(price)
+                            debug_print(f"economy.roblox.com price: {price}")
         except Exception as e:
-            debug_print(f"Error fetching lowest price for {item_id}: {e}")
-        return None
+            debug_print(f"economy API error: {e}")
 
+        # 3. Try apis.roblox.com/marketplace-sales API
+        url2 = f"https://apis.roblox.com/marketplace-sales/v1/item/{item_id}/resellers?limit=1"
+        try:
+            async with self.auth.get(url2) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    if data.get("data") and len(data["data"]) > 0:
+                        price = data["data"][0].get("price", 0)
+                        if price > 0:
+                            prices.append(price)
+                            debug_print(f"marketplace-sales API price: {price}")
+        except Exception as e:
+            debug_print(f"marketplace-sales API error: {e}")
+
+        # 4. Try catalog.roblox.com API
+        url3 = f"https://catalog.roblox.com/v1/assets/{item_id}/resellers"
+        try:
+            async with self.auth.get(url3) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    if data.get("data") and len(data["data"]) > 0:
+                        price = data["data"][0].get("price", 0)
+                        if price > 0:
+                            prices.append(price)
+                            debug_print(f"catalog.roblox.com price: {price}")
+        except Exception as e:
+            debug_print(f"catalog API error: {e}")
+
+        if prices:
+            lowest = min(prices)
+            debug_print(f"All prices: {prices}, lowest: {lowest}")
+            return lowest
+        return None
+    # ==================================================
+
+    # ========== FIXED SELL_ITEM ==========
     async def sell_item(self):
         item = self.current
         debug_print(f"Selling item: {item.name} (ID {item.id})")
@@ -253,24 +276,34 @@ class AutoSeller(ConfigLoader):
             f"Selling [g{len(item.collectibles)}x] of [g{item.name}] items...",
             "selling", Color(255, 153, 0))
 
-        current_lowest = await self.get_current_lowest_price(item.id)
-        debug_print(f"Current lowest price on market: {current_lowest}")
+        # Get the best available lowest price using all APIs
+        lowest_price = await self.get_lowest_price_multi(item.id, item)
 
-        if current_lowest and current_lowest > 0:
+        if lowest_price and lowest_price > 0:
+            # Apply undercut
             if self.under_cut_type == "percent":
-                undercut_amount = int(current_lowest * (self.under_cut_amount / 100))
-                target_price = current_lowest - undercut_amount
+                undercut_amount = int(lowest_price * (self.under_cut_amount / 100))
+                target_price = lowest_price - undercut_amount
             else:
-                target_price = current_lowest - self.under_cut_amount
+                target_price = lowest_price - self.under_cut_amount
+
             if target_price < 5:
                 target_price = 5
-            debug_print(f"Competition found ({current_lowest}), applied {self.under_cut_amount}{'%' if self.under_cut_type == 'percent' else ' Robux'} undercut → {target_price}")
+
+            # Sanity cap: if price is absurdly high (>10000), cap to 5000
+            if target_price > 10000:
+                debug_print(f"WARNING: target_price {target_price} is very high. Capping to 5000.")
+                target_price = 5000
+
+            debug_print(f"Competition found (lowest={lowest_price}), undercut {self.under_cut_amount}{'%' if self.under_cut_type == 'percent' else ' Robux'} → {target_price}")
         else:
+            # No competition – use configurable default
             target_price = self.default_price_no_competition
-            debug_print(f"No competition, using Default_Price_No_Competition from config: {target_price}")
+            debug_print(f"⚠️ No competition found for {item.name}! Using Default_Price_No_Competition: {target_price}")
 
         item.price_to_sell = target_price
 
+        # Attempt to sell
         max_retries = 3
         sold_amount = None
         for attempt in range(max_retries):
@@ -308,6 +341,7 @@ class AutoSeller(ConfigLoader):
         if self.save_progress and item.id in self._items:
             self.seen.add(item.id)
         self.next_item()
+    # ====================================
 
     def fetch_item_info(self, *, step_index: int = 1) -> Optional[Iterable[Task]]:
         try:
