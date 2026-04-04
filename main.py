@@ -136,11 +136,10 @@ class AutoSeller(ConfigLoader):
         if (self.current_index + 2) % 30 or not self.current_index:
             return None
 
-        # List of endpoints to try (primary first)
         endpoints = [
-            "https://apis.roblox.com/marketplace-items/v1/items/details",   # original (often 404 now)
-            "https://economy.roblox.com/v2/assets/details",                 # fallback #1
-            "https://catalog.roblox.com/v1/assets/details"                  # fallback #2
+            "https://apis.roblox.com/marketplace-items/v1/items/details",
+            "https://economy.roblox.com/v2/assets/details",
+            "https://catalog.roblox.com/v1/assets/details"
         ]
 
         item_ids = [i.item_id for i in self.items[self.current_index:30]]
@@ -155,7 +154,6 @@ class AutoSeller(ConfigLoader):
                         used_endpoint = endpoint
                         break
                     else:
-                        # Log but continue to next endpoint
                         print(f"[WARN] Endpoint {endpoint} returned {response.status}, trying next...")
             except Exception as e:
                 print(f"[WARN] Request to {endpoint} failed: {e}")
@@ -165,21 +163,16 @@ class AutoSeller(ConfigLoader):
             print("[ERROR] All marketplace endpoints failed, skipping resale restriction filter.")
             return
 
-        # Handle different response structures
         items_list = data
-        # Some endpoints wrap the response in a "data" field
         if isinstance(data, dict) and "data" in data:
             items_list = data["data"]
 
         for item_details in items_list:
-            # Normalize field names (some APIs use "itemTargetId", others "assetId")
             item_id = item_details.get("itemTargetId") or item_details.get("assetId")
             if not item_id:
                 continue
 
-            # Check resaleRestriction (1 = not resellable)
-            resale_restriction = item_details.get("resaleRestriction", 0)
-            if resale_restriction == 1:
+            if item_details.get("resaleRestriction") == 1:
                 self.not_resable.add(item_id)
                 self.remove_item(item_id)
 
@@ -357,6 +350,19 @@ class AutoSeller(ConfigLoader):
         Display.info("Getting current limiteds cap")
         items_cap = await get_current_cap(self.auth)
 
+        # ========== FIX: Handle None or invalid items_cap ==========
+        if items_cap is None:
+            Display.exception(
+                "Failed to retrieve limiteds cap (get_current_cap returned None). "
+                "Check your internet connection, cookie validity, or if the Roblox API is down."
+            )
+            return
+
+        if not isinstance(items_cap, dict):
+            Display.exception(f"Invalid cap data type: {type(items_cap)}. Expected dict.")
+            return
+        # ===========================================================
+
         ignored_items = list(self.seen | self.blacklist | self.not_resable)
 
         async for item, item_details, thumbnail in self.__fetch_items():
@@ -371,7 +377,19 @@ class AutoSeller(ConfigLoader):
             item_obj = self.get_item(item_id)
 
             if item_obj is None:
-                asset_cap = items_cap[ITEM_TYPES[item_details["assetType"]]]["priceFloor"]
+                asset_type = ITEM_TYPES.get(item_details["assetType"])
+                if asset_type is None:
+                    Display.warning(f"Unknown asset type {item_details['assetType']} for item {item_id}, skipping.")
+                    continue
+
+                # Safely get cap info
+                cap_info = items_cap.get(asset_type)
+                if cap_info is None:
+                    Display.warning(f"No cap info for asset type {asset_type} (item {item_id}), using price floor 0.")
+                    asset_cap = 0
+                else:
+                    asset_cap = cap_info.get("priceFloor", 0)
+
                 sell_price = define_sale_price(self.under_cut_amount, self.under_cut_type,
                                                asset_cap, item_details["lowestResalePrice"])
 
