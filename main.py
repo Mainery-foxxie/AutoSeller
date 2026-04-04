@@ -2,6 +2,15 @@ from __future__ import annotations
 
 import sys
 import os
+import traceback
+
+# ========== DEBUG MODE ==========
+DEBUG = True  # Set to False to reduce console spam
+# ================================
+
+def debug_print(*args, **kwargs):
+    if DEBUG:
+        print("[DEBUG]", *args, **kwargs)
 
 __import__("warnings").filterwarnings("ignore")
 
@@ -31,14 +40,12 @@ try:
     from discord_bot import start as discord_bot_start
 
     os.system("cls" if os.name == "nt" else "clear")
-except ModuleNotFoundError:
-    import traceback
+except ModuleNotFoundError as e:
     print(traceback.format_exc())
     install = input("Uninstalled modules found, do you want to install them? Y/n: ").lower() == "y"
 
     if install:
         print("Installing modules now...")
-        print("hi")
         os.system("pip uninstall pycord")
         os.system("pip install aiohttp rgbprint discord.py aioconsole pypresence")
         print("Successfully installed required modules.")
@@ -50,59 +57,68 @@ except ModuleNotFoundError:
 
 __all__ = ("AutoSeller",)
 
-# ==================== FALLBACK get_current_cap ====================
-# Override the broken function from core.main_tools with a robust version
+# ==================== FALLBACK get_current_cap WITH DEBUG ====================
 async def get_current_cap(auth):
     """
     Fetch price floor for each asset type.
     Returns dict: {asset_type_name: {"priceFloor": int}}
-    If all endpoints fail, returns zero caps (you can change the floor value).
+    With detailed debug output.
     """
     from core.constants import ITEM_TYPES
 
-    # Try multiple endpoints (some may be deprecated)
     endpoints = [
         "https://economy.roblox.com/v1/assets/price-floor",
         "https://economy.roblox.com/v2/assets/price-floor",
         "https://catalog.roblox.com/v1/price-floors"
     ]
 
+    debug_print("Attempting to fetch price floors from endpoints:", endpoints)
+
     for endpoint in endpoints:
         try:
+            debug_print(f"Trying endpoint: {endpoint}")
             async with auth.get(endpoint) as resp:
+                debug_print(f"Response status: {resp.status}")
                 if resp.status == 200:
                     data = await resp.json()
-                    # Attempt to parse common response structures
-                    # The original likely expected something like {1: 5, 2: 10} (assetTypeId -> floor)
-                    # We'll try to convert if it's a dict of ints
+                    debug_print(f"Raw response data: {data}")
+                    
+                    # Try to parse common structures
                     if isinstance(data, dict):
                         caps = {}
                         for asset_type_id, price_floor in data.items():
-                            # Find the matching asset type name in ITEM_TYPES
                             for name, type_id in ITEM_TYPES.items():
                                 if str(type_id) == str(asset_type_id):
                                     caps[name] = {"priceFloor": price_floor}
                                     break
                         if caps:
-                            print(f"[INFO] Using caps from {endpoint}")
+                            debug_print(f"Parsed caps from {endpoint}: {caps}")
                             return caps
-                    # If response is something else, just return a dummy
-                    break
+                        else:
+                            debug_print("No matching asset types found, returning zero caps")
+                            break
+                    else:
+                        debug_print("Response is not a dict, returning zero caps")
+                        break
+                else:
+                    debug_print(f"Non-200 status: {resp.status}, response text: {await resp.text()}")
         except Exception as e:
-            print(f"[WARN] Cap endpoint {endpoint} failed: {e}")
+            debug_print(f"Exception on {endpoint}: {e}")
+            debug_print(traceback.format_exc())
             continue
 
-    # Fallback: return zero floor for all asset types
-    print("[WARN] Could not fetch price floors. Using fallback caps (price floor = 5 Robux).")
+    # Fallback: return floor 5 for all asset types
+    debug_print("Using fallback caps (price floor = 5 Robux for all types)")
     caps = {}
     for asset_type_name in ITEM_TYPES.values():
-        caps[asset_type_name] = {"priceFloor": 5}   # change 5 to your desired minimum
+        caps[asset_type_name] = {"priceFloor": 5}
+    debug_print(f"Fallback caps: {caps}")
     return caps
 
 # Replace the imported function
 import core.main_tools
 core.main_tools.get_current_cap = get_current_cap
-# ===============================================================
+# ============================================================================
 
 class AutoSeller(ConfigLoader):
     __slots__ = ("config", "_items", "auth", "buy_checker", "blacklist",
@@ -114,6 +130,7 @@ class AutoSeller(ConfigLoader):
                  blacklist: FileSync,
                  seen: FileSync,
                  not_resable: FileSync) -> None:
+        debug_print("Initializing AutoSeller")
         super().__init__(config)
         
         self.config = config
@@ -180,11 +197,8 @@ class AutoSeller(ConfigLoader):
             start=int(self.loaded_time.timestamp())
         )
 
-    # ======================= API FALLBACK =======================
     async def filter_non_resable(self):
-        """
-        Check which items have resaleRestriction == 1 using multiple API endpoints.
-        """
+        """Check resaleRestriction with multiple API endpoints + debug"""
         if (self.current_index + 2) % 30 or not self.current_index:
             return None
 
@@ -195,41 +209,52 @@ class AutoSeller(ConfigLoader):
         ]
 
         item_ids = [i.item_id for i in self.items[self.current_index:30]]
+        debug_print(f"Filtering non-resellable for item IDs: {item_ids[:5]}... (total {len(item_ids)})")
+        
         data = None
         used_endpoint = None
 
         for endpoint in endpoints:
             try:
+                debug_print(f"Trying endpoint: {endpoint}")
                 async with self.auth.post(endpoint, json={"itemIds": item_ids}) as response:
+                    debug_print(f"Response status: {response.status}")
                     if response.status == 200:
                         data = await response.json()
                         used_endpoint = endpoint
+                        debug_print(f"Success using {endpoint}, response keys: {data.keys() if isinstance(data, dict) else 'list'}")
                         break
                     else:
-                        print(f"[WARN] Endpoint {endpoint} returned {response.status}")
+                        text = await response.text()
+                        debug_print(f"Failed {endpoint} (status {response.status}): {text[:200]}")
             except Exception as e:
-                print(f"[WARN] Request to {endpoint} failed: {e}")
+                debug_print(f"Exception on {endpoint}: {e}")
+                debug_print(traceback.format_exc())
                 continue
 
         if data is None:
-            print("[ERROR] All marketplace endpoints failed, skipping resale restriction filter.")
+            debug_print("All endpoints failed, skipping resale restriction filter")
             return
 
         items_list = data
         if isinstance(data, dict) and "data" in data:
             items_list = data["data"]
+            debug_print(f"Extracted items from 'data' field, count: {len(items_list)}")
 
+        restricted = []
         for item_details in items_list:
             item_id = item_details.get("itemTargetId") or item_details.get("assetId")
             if not item_id:
+                debug_print(f"Skipping item without ID: {item_details}")
                 continue
 
             if item_details.get("resaleRestriction") == 1:
+                debug_print(f"Item {item_id} is non-resellable (resaleRestriction=1)")
                 self.not_resable.add(item_id)
                 self.remove_item(item_id)
+                restricted.append(item_id)
 
-        print(f"[INFO] Filtered non-resellable items using {used_endpoint}")
-    # ==============================================================
+        debug_print(f"Removed {len(restricted)} non-resellable items using {used_endpoint}")
 
     def fetch_item_info(self, *, step_index: int = 1) -> Optional[Iterable[Task]]:
         try:
@@ -247,15 +272,20 @@ class AutoSeller(ConfigLoader):
         self._items = dict(sorted(self._items.items(), key=lambda x: getattr(x[1], _type)))
 
     async def start(self):
+        debug_print("AutoSeller.start() called")
         await asyncio.gather(self.auth.fetch_csrf_token(),
                              self.handle_exceptions())
 
         Display.info("Checking cookie to be valid")
-        if await self.auth.fetch_user_info() is None:
+        user_info = await self.auth.fetch_user_info()
+        debug_print(f"User info: {user_info}")
+        if user_info is None:
             return Display.exception("Invalid cookie provided")
 
         Display.info("Checking premium owning")
-        if not await self.auth.fetch_premium():
+        premium = await self.auth.fetch_premium()
+        debug_print(f"Premium status: {premium}")
+        if not premium:
             return Display.exception("You dont have premium to sell limiteds")
 
         await self._load_items()
@@ -265,7 +295,9 @@ class AutoSeller(ConfigLoader):
             try:
                 await self.rich_presence.connect()
                 await self.update_presence()
-            except DiscordNotFound:
+                debug_print("Rich presence connected")
+            except DiscordNotFound as e:
+                debug_print(f"Discord not found: {e}")
                 return Display.exception("Could find Discord running to show presence")
 
         try:
@@ -277,18 +309,29 @@ class AutoSeller(ConfigLoader):
                     self.start_selling()
                 )
                 await asyncio.gather(*filter(None, tasks))
-        except LoginFailure:
+        except LoginFailure as e:
+            debug_print(f"Discord login failure: {e}")
             return Display.exception("Invalid discord token provided")
-        except:
+        except Exception as e:
+            debug_print(f"Unexpected error in start(): {e}")
+            debug_print(traceback.format_exc())
             return Display.exception(f"Unknown error occurred:\n\n{format_exc()}")
 
     async def start_selling(self):
+        debug_print("Starting selling loop")
         for i in range(2):
-            for task in self.fetch_item_info(step_index=i):
-                await task
+            tasks = self.fetch_item_info(step_index=i)
+            if tasks:
+                for task in tasks:
+                    if task:
+                        await task
 
-        if self.auto_sell: await self._auto_sell_items()
-        else: await self._manual_selling()
+        if self.auto_sell:
+            debug_print("Auto-sell mode enabled")
+            await self._auto_sell_items()
+        else:
+            debug_print("Manual selling mode")
+            await self._manual_selling()
 
         Tools.clear_console()
         await Display.custom(
@@ -303,6 +346,7 @@ class AutoSeller(ConfigLoader):
             Tools.exit_program()
 
     async def sell_item(self):
+        debug_print(f"Selling item: {self.current.name} (ID {self.current.id})")
         await Display.custom(
             f"Selling [g{len(self.current.collectibles)}x] of [g{self.current.name}] items...",
             "selling", Color(255, 153, 0))
@@ -313,6 +357,7 @@ class AutoSeller(ConfigLoader):
             verbose=True
         )
 
+        debug_print(f"Sold amount: {sold_amount}")
         if sold_amount is not None:
             self.total_sold += sold_amount
 
@@ -333,6 +378,7 @@ class AutoSeller(ConfigLoader):
         while not self.done:
             await self.update_console()
             choice = (await aioconsole.ainput()).strip()
+            debug_print(f"User choice: {choice}")
 
             match choice:
                 case "1":
@@ -359,9 +405,11 @@ class AutoSeller(ConfigLoader):
                         continue
 
                     self.current.price_to_sell = int(new_price)
+                    debug_print(f"New price set: {self.current.price_to_sell}")
 
                     Display.success(f"Successfully set a new price to sell! ([g${self.current.price_to_sell}])")
                 case "3":
+                    debug_print(f"Blacklisting {self.current.id}")
                     self.blacklist.add(self.current.id)
                     self.next_item()
 
@@ -381,16 +429,20 @@ class AutoSeller(ConfigLoader):
     async def __fetch_items(self) -> AsyncGenerator:
         Display.info("Loading your inventory")
         user_items = await AssetsLoader(get_user_inventory, ITEM_TYPES.keys()).load(self.auth)
+        debug_print(f"Loaded {len(user_items)} user items")
         if not user_items:
             Display.exception("You dont have any limited UGC items")
 
         item_ids = [str(asset["assetId"]) for asset in user_items]
+        debug_print(f"Item IDs sample: {item_ids[:5]}")
 
         Display.info("Loading items thumbnails")
         items_thumbnails = await AssetsLoader(get_assets_thumbnails, item_ids, 100).load(self.auth)
+        debug_print(f"Loaded {len(items_thumbnails)} thumbnails")
 
         Display.info(f"Found {len(user_items)} items. Checking them...")
         items_details = await AssetsLoader(get_items_details, item_ids, 120).load(self.auth)
+        debug_print(f"Loaded details for {len(items_details)} items")
 
         for item_info in zip(user_items, items_details, items_thumbnails):
             yield item_info
@@ -401,20 +453,21 @@ class AutoSeller(ConfigLoader):
 
         Display.info("Getting current limiteds cap")
         items_cap = await get_current_cap(self.auth)
+        debug_print(f"items_cap type: {type(items_cap)}, content: {items_cap}")
 
-        # FIX: Handle None or invalid items_cap
         if items_cap is None:
-            Display.exception("Failed to retrieve limiteds cap (get_current_cap returned None). Using fallback caps.")
-            # Fallback: create a dummy cap with floor 5 for all asset types
+            debug_print("items_cap is None, using fallback caps")
             items_cap = {}
             for asset_type_name in ITEM_TYPES.values():
                 items_cap[asset_type_name] = {"priceFloor": 5}
 
         if not isinstance(items_cap, dict):
+            debug_print(f"items_cap is not dict: {type(items_cap)}")
             Display.exception(f"Invalid cap data type: {type(items_cap)}. Expected dict.")
             return
 
         ignored_items = list(self.seen | self.blacklist | self.not_resable)
+        debug_print(f"Ignored items count: {len(ignored_items)}")
 
         async for item, item_details, thumbnail in self.__fetch_items():
             item_id = item["assetId"]
@@ -423,17 +476,20 @@ class AutoSeller(ConfigLoader):
                 item_id in ignored_items
                 or item_details["creatorTargetId"] in self.creators_blacklist
             ):
+                debug_print(f"Skipping item {item_id} (blacklisted or ignored)")
                 continue
 
             item_obj = self.get_item(item_id)
 
             if item_obj is None:
                 asset_type = ITEM_TYPES.get(item_details["assetType"])
+                debug_print(f"Asset type for {item_id}: {asset_type}")
                 if asset_type is None:
                     Display.warning(f"Unknown asset type {item_details['assetType']} for item {item_id}, skipping.")
                     continue
 
                 cap_info = items_cap.get(asset_type)
+                debug_print(f"Cap info for {asset_type}: {cap_info}")
                 if cap_info is None:
                     Display.warning(f"No cap info for {asset_type} (item {item_id}), using price floor 5.")
                     asset_cap = 5
@@ -442,6 +498,7 @@ class AutoSeller(ConfigLoader):
 
                 sell_price = define_sale_price(self.under_cut_amount, self.under_cut_type,
                                                asset_cap, item_details["lowestResalePrice"])
+                debug_print(f"Sell price for {item_id}: {sell_price} (cap={asset_cap}, lowest={item_details['lowestResalePrice']})")
 
                 item_obj = Item(
                     item, item_details,
@@ -457,6 +514,7 @@ class AutoSeller(ConfigLoader):
                 instance_id=item["collectibleItemInstanceId"]
             )
 
+        debug_print(f"Total items loaded: {len(self.items)}")
         if not self.items:
             Display.error(f"You dont have any limiteds that are not in[g blacklist/] directory")
             clear_items = await Display.input(f"Do you want to reset your selling progress? (Y/n): ")
@@ -467,25 +525,27 @@ class AutoSeller(ConfigLoader):
                 Tools.exit_program()
 
         if self.keep_serials or self.keep_copy:
+            debug_print(f"Applying keep_serials={self.keep_serials}, keep_copy={self.keep_copy}")
             for item in self.items:
                 if len(item.collectibles) <= self.keep_copy:
                     self.remove_item(item.id)
+                    debug_print(f"Removed item {item.id} due to keep_copy")
                     continue
 
                 for col in item.collectibles:
                     if col.serial > self.keep_serials:
                         col.skip_on_sale = True
+                        debug_print(f"Serial {col.serial} marked skip_on_sale")
 
         if not self.items:
             not_met = []
-
             if self.keep_copy: not_met.append(f"{self.keep_copy} copies or higher")
             if self.keep_serials: not_met.append(f"{self.keep_serials} serial or higher")
-
             list_requirements = ", ".join(not_met)
             return Display.exception(f"You dont have any limiteds with {list_requirements}")
 
         self.loaded_time = datetime.now()
+        debug_print(f"Items loaded at {self.loaded_time}")
 
     async def update_console(self) -> None:
         Tools.clear_console()
@@ -552,27 +612,38 @@ class AutoSeller(ConfigLoader):
 
 
 async def main() -> None:
+    debug_print("Main function started")
     Display.info("Setting up everything...")
 
     Display.info("Checking for updates")
-    if await check_for_update(RAW_CODE_URL, VERSION):
-        await Display.custom(
-            "Your code is outdated. Please update it from github",
-            "new", Color(163, 133, 0), exit_after=True)
+    try:
+        update_needed = await check_for_update(RAW_CODE_URL, VERSION)
+        debug_print(f"Update needed: {update_needed}")
+        if update_needed:
+            await Display.custom(
+                "Your code is outdated. Please update it from github",
+                "new", Color(163, 133, 0), exit_after=True)
+    except Exception as e:
+        debug_print(f"Update check failed: {e}")
+        debug_print(traceback.format_exc())
 
     Display.info("Loading config")
     config = load_file("config.json")
+    debug_print(f"Config loaded: {list(config.keys())}")
 
     Display.info("Loading data assets")
     blacklist = FileSync("blacklist/blacklist.json")
     seen = FileSync("blacklist/seen.json")
     not_resable = FileSync("blacklist/not_resable.json")
+    debug_print(f"Blacklist size: {len(blacklist)}, Seen: {len(seen)}, NotResable: {len(not_resable)}")
 
     auto_seller = AutoSeller(config, blacklist, seen, not_resable)
 
     try:
         await auto_seller.start()
-    except:
+    except Exception as e:
+        debug_print(f"Critical error in main: {e}")
+        debug_print(traceback.format_exc())
         return Display.exception(f"Unknown error occurred:\n\n{format_exc()}")
 
 
