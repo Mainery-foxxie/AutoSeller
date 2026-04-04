@@ -1,6 +1,7 @@
 # AutoSeller – Roblox UGC Limited Seller
 
 [![Python Version](https://img.shields.io/badge/python-3.9%2B-blue)](https://www.python.org/downloads/)
+
 **AutoSeller** is the #1 tool to automatically sell your Roblox UGC Limited items with smart undercutting, rate‑limit handling, and optional Discord rich presence & webhooks.
 
 ![Preview](https://github.com/user-attachments/assets/eeaa7337-bf2d-4fcd-a2ac-5502549599f3)
@@ -18,7 +19,6 @@
 - 🤖 **Discord bot** – control the seller via Discord commands (optional).
 - 🐛 **Debug mode** – purple coloured debug output, toggle via `config.json`.
 - 💾 **Progress saving** – remembers which items you already sold (skip them next run).
-- 🚫 **Blacklist** – manually or automatically blacklist items that fail to sell (e.g., 412 errors).
 
 ---
 
@@ -169,5 +169,4 @@ For questions, ideas, or bug reports, contact me on Discord:
 [**deadlysilence._**](https://discord.com/channels/)
 
 ---
-
 **Happy selling!** 🚀
