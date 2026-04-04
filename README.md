@@ -49,7 +49,6 @@ Create a `config.json` file in the root folder with the following structure:
     "Cookie": "YOUR_ROBLOX_COOKIE_HERE",
     "Discord_Rich_Presence": true,
     "Debug": true,
-
     "Discord_Bot": {
         "Enabled": false,
         "Token": "",
