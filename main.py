@@ -5,6 +5,7 @@ import os
 import traceback
 import asyncio
 import random
+from traceback import format_exc
 
 # ========== DEBUG MODE (controlled by config.json) ==========
 DEBUG = True
@@ -56,35 +57,86 @@ except ModuleNotFoundError as e:
 
 __all__ = ("AutoSeller",)
 
-# ==================== FIXED get_current_cap (per asset type) ====================
+# ==================== AUTOMATIC FLOOR DETECTION ====================
 async def get_current_cap(auth):
     """
-    Fetch price floor for each asset type individually.
-    Returns dict: {asset_type_name: {"priceFloor": int}}
+    Fetch price floor for each asset type using multiple methods:
+    1. Official Roblox price-floor API.
+    2. If that fails, scan your own on-sale items to infer the floor.
+    3. Fallback to reasonable defaults (emote=25, hat=50, etc.)
     """
     from core.constants import ITEM_TYPES
 
     caps = {}
+    
+    # First, try the official API for all types
     for asset_type_name, asset_type_id in ITEM_TYPES.items():
         url = f"https://economy.roblox.com/v1/assets/price-floor?assetTypeId={asset_type_id}"
         try:
             async with auth.get(url) as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    if isinstance(data, (int, float)):
+                    if isinstance(data, (int, float)) and data > 0:
                         caps[asset_type_name] = {"priceFloor": int(data)}
-                    elif isinstance(data, dict) and "priceFloor" in data:
+                        continue
+                    elif isinstance(data, dict) and data.get("priceFloor", 0) > 0:
                         caps[asset_type_name] = {"priceFloor": data["priceFloor"]}
-                    else:
-                        caps[asset_type_name] = {"priceFloor": 5}
-                else:
-                    debug_print(f"Price floor for {asset_type_name} returned {resp.status}, using fallback 5")
-                    caps[asset_type_name] = {"priceFloor": 5}
-        except Exception as e:
-            debug_print(f"Error fetching floor for {asset_type_name}: {e}")
-            caps[asset_type_name] = {"priceFloor": 5}
+                        continue
+        except:
+            pass
+        # If we reach here, official API gave 0 or error
+        caps[asset_type_name] = None  # mark as unknown
 
-    debug_print(f"Fetched price floors: {caps}")
+    # Second, scan your own inventory for items that are on sale
+    # to infer the floor price for missing types
+    debug_print("Fetching your own on-sale items to infer floors...")
+    try:
+        # Get your user ID
+        user_id = auth.user_id
+        url = f"https://economy.roblox.com/v1/users/{user_id}/resellable-items?limit=100"
+        async with auth.get(url) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                for item in data.get("data", []):
+                    asset_type_id = item.get("assetType")
+                    price = item.get("price", 0)
+                    if price <= 0:
+                        continue
+                    # Find asset type name
+                    for name, type_id in ITEM_TYPES.items():
+                        if type_id == asset_type_id:
+                            if caps.get(name) is None or caps[name]["priceFloor"] > price:
+                                caps[name] = {"priceFloor": price}
+                            break
+    except Exception as e:
+        debug_print(f"Failed to scan your own items: {e}")
+
+    # Third, fill any missing caps with sensible defaults
+    default_floors = {
+        "Emote": 25,
+        "Hat": 50,
+        "HairAccessory": 50,
+        "FaceAccessory": 50,
+        "NeckAccessory": 50,
+        "ShoulderAccessory": 100,
+        "FrontAccessory": 50,
+        "BackAccessory": 100,
+        "WaistAccessory": 50,
+        "TShirtAccessory": 5,
+        "ShirtAccessory": 5,
+        "PantsAccessory": 5,
+        "JacketAccessory": 5,
+        "SweaterAccessory": 5,
+        "ShortsAccessory": 5,
+        "DressSkirtAccessory": 5,
+    }
+    for asset_type_name in ITEM_TYPES.values():
+        if caps.get(asset_type_name) is None:
+            floor = default_floors.get(asset_type_name, 5)
+            caps[asset_type_name] = {"priceFloor": floor}
+            debug_print(f"Using default floor for {asset_type_name}: {floor}")
+
+    debug_print(f"Final price floors: {caps}")
     return caps
 
 import core.main_tools
@@ -140,7 +192,6 @@ class AutoSeller(ConfigLoader):
             self.done = True
         self.fetch_item_info(step_index=step_index)
 
-    # ========== NO EASTER EGG ==========
     async def update_presence(self) -> None:
         await self.rich_presence.update(
             state=f"{self.current_index + 1} out of {len(self.items)}",
@@ -153,9 +204,7 @@ class AutoSeller(ConfigLoader):
                      {"url": URL_REPOSITORY, "label": "Use Tool Yourself"}],
             start=int(self.loaded_time.timestamp())
         )
-    # ===================================
 
-    # ---------- Multi‑endpoint resale restriction filter ----------
     async def filter_non_resable(self):
         if (self.current_index + 2) % 30 or not self.current_index:
             return None
@@ -183,7 +232,6 @@ class AutoSeller(ConfigLoader):
                 self.not_resable.add(item_id)
                 self.remove_item(item_id)
 
-    # ---------- Get current lowest market price ----------
     async def get_current_lowest_price(self, item_id: int) -> Optional[int]:
         url = f"https://economy.roblox.com/v1/assets/{item_id}/resellers"
         try:
@@ -198,7 +246,6 @@ class AutoSeller(ConfigLoader):
             debug_print(f"Error fetching lowest price for {item_id}: {e}")
         return None
 
-    # ---------- SELL ITEM (no automatic blacklist) ----------
     async def sell_item(self):
         item = self.current
         debug_print(f"Selling item: {item.name} (ID {item.id})")
@@ -206,11 +253,9 @@ class AutoSeller(ConfigLoader):
             f"Selling [g{len(item.collectibles)}x] of [g{item.name}] items...",
             "selling", Color(255, 153, 0))
 
-        # 1. Check current market price
         current_lowest = await self.get_current_lowest_price(item.id)
         debug_print(f"Current lowest price on market: {current_lowest}")
 
-        # 2. Determine target price
         if current_lowest and current_lowest > 0:
             if self.under_cut_type == "percent":
                 undercut_amount = int(current_lowest * (self.under_cut_amount / 100))
@@ -226,7 +271,6 @@ class AutoSeller(ConfigLoader):
 
         item.price_to_sell = target_price
 
-        # 3. Attempt to sell
         max_retries = 3
         sold_amount = None
         for attempt in range(max_retries):
@@ -251,24 +295,20 @@ class AutoSeller(ConfigLoader):
                     debug_print(f"Rate limited! Waiting {wait} seconds...")
                     await asyncio.sleep(wait)
                 elif "412" in error_msg or "precondition failed" in error_msg:
-                    debug_print(f"Item {item.id} returned 412 – not sellable. Skipping (no auto-blacklist).")
-                    # No automatic blacklist
+                    debug_print(f"Item {item.id} returned 412 – not sellable. Skipping.")
                     break
                 else:
                     debug_print(f"Unexpected error: {e}")
                     break
 
-        # 4. Random delay
         delay = random.uniform(2, 5)
         debug_print(f"Waiting {delay:.1f} seconds before next item...")
         await asyncio.sleep(delay)
 
-        # 5. Mark as seen and move to next
         if self.save_progress and item.id in self._items:
             self.seen.add(item.id)
         self.next_item()
 
-    # ---------- The rest of the class ----------
     def fetch_item_info(self, *, step_index: int = 1) -> Optional[Iterable[Task]]:
         try:
             item = self.items[self.current_index + step_index]
@@ -356,7 +396,6 @@ class AutoSeller(ConfigLoader):
                     self.current.price_to_sell = int(new_price)
                     Display.success(f"Successfully set a new price to sell! ([g${self.current.price_to_sell}])")
                 case "3":
-                    # Manual blacklist
                     self.blacklist.add(self.current.id)
                     self.next_item()
                     Display.success(f"Successfully added [g{self.current.name} ({self.current.id})] into blacklist!")
