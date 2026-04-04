@@ -206,69 +206,57 @@ class AutoSeller(ConfigLoader):
                 self.not_resable.add(item_id)
                 self.remove_item(item_id)
 
-    # ========== MULTI‑API LOWEST PRICE CHECK ==========
+    # ========== MULTI‑API LOWEST PRICE CHECK (WITH HEADERS) ==========
     async def get_lowest_price_multi(self, item_id: int, item_obj: Optional[Item] = None) -> Optional[int]:
-        """
-        Try multiple endpoints to get the current lowest resale price.
-        Returns the lowest price found, or None if none.
-        """
+        """Try multiple endpoints to get the current lowest resale price."""
         prices = []
 
-        # 1. Use item's stored lowest_resale_price (from inventory details)
+        async def fetch_price(url):
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Accept": "application/json",
+                "Referer": "https://www.roblox.com/",
+            }
+            try:
+                async with self.auth.get(url, headers=headers) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if data.get("data") and len(data["data"]) > 0:
+                            return data["data"][0].get("price", 0)
+            except Exception as e:
+                debug_print(f"Request error for {url}: {e}")
+            return None
+
+        # 1. Stored price (fallback)
         if item_obj and item_obj.lowest_resale_price and item_obj.lowest_resale_price > 0:
             prices.append(item_obj.lowest_resale_price)
             debug_print(f"Stored lowest_resale_price: {item_obj.lowest_resale_price}")
 
-        # 2. Try economy.roblox.com API
-        url1 = f"https://economy.roblox.com/v1/assets/{item_id}/resellers"
-        try:
-            async with self.auth.get(url1) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    if data.get("data") and len(data["data"]) > 0:
-                        price = data["data"][0].get("price", 0)
-                        if price > 0:
-                            prices.append(price)
-                            debug_print(f"economy.roblox.com price: {price}")
-        except Exception as e:
-            debug_print(f"economy API error: {e}")
+        # 2. Live economy API
+        price1 = await fetch_price(f"https://economy.roblox.com/v1/assets/{item_id}/resellers")
+        if price1:
+            prices.append(price1)
+            debug_print(f"economy.roblox.com price: {price1}")
 
-        # 3. Try apis.roblox.com/marketplace-sales API
-        url2 = f"https://apis.roblox.com/marketplace-sales/v1/item/{item_id}/resellers?limit=1"
-        try:
-            async with self.auth.get(url2) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    if data.get("data") and len(data["data"]) > 0:
-                        price = data["data"][0].get("price", 0)
-                        if price > 0:
-                            prices.append(price)
-                            debug_print(f"marketplace-sales API price: {price}")
-        except Exception as e:
-            debug_print(f"marketplace-sales API error: {e}")
+        # 3. Marketplace sales API
+        price2 = await fetch_price(f"https://apis.roblox.com/marketplace-sales/v1/item/{item_id}/resellers?limit=1")
+        if price2:
+            prices.append(price2)
+            debug_print(f"marketplace-sales API price: {price2}")
 
-        # 4. Try catalog.roblox.com API
-        url3 = f"https://catalog.roblox.com/v1/assets/{item_id}/resellers"
-        try:
-            async with self.auth.get(url3) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    if data.get("data") and len(data["data"]) > 0:
-                        price = data["data"][0].get("price", 0)
-                        if price > 0:
-                            prices.append(price)
-                            debug_print(f"catalog.roblox.com price: {price}")
-        except Exception as e:
-            debug_print(f"catalog API error: {e}")
+        # 4. Catalog API
+        price3 = await fetch_price(f"https://catalog.roblox.com/v1/assets/{item_id}/resellers")
+        if price3:
+            prices.append(price3)
+            debug_print(f"catalog.roblox.com price: {price3}")
 
         if prices:
             lowest = min(prices)
             debug_print(f"All prices: {prices}, lowest: {lowest}")
             return lowest
         return None
-    # ==================================================
+    # ================================================================
 
-    # ========== FIXED SELL_ITEM ==========
     async def sell_item(self):
         item = self.current
         debug_print(f"Selling item: {item.name} (ID {item.id})")
@@ -287,11 +275,15 @@ class AutoSeller(ConfigLoader):
             else:
                 target_price = lowest_price - self.under_cut_amount
 
+            # Force at least 1 Robux lower than the current lowest
+            if target_price >= lowest_price:
+                target_price = lowest_price - 1
+
             if target_price < 5:
                 target_price = 5
 
-            # Sanity cap: if price is absurdly high (>10000), cap to 5000
-            if target_price > 10000:
+            # Cap absurdly high prices (e.g., 99M) to a reasonable max
+            if target_price > 5000:
                 debug_print(f"WARNING: target_price {target_price} is very high. Capping to 5000.")
                 target_price = 5000
 
@@ -341,7 +333,6 @@ class AutoSeller(ConfigLoader):
         if self.save_progress and item.id in self._items:
             self.seen.add(item.id)
         self.next_item()
-    # ====================================
 
     def fetch_item_info(self, *, step_index: int = 1) -> Optional[Iterable[Task]]:
         try:
