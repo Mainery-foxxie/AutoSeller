@@ -1,6 +1,6 @@
 {
     "Cookie": "",
-    "Discord_Rich_Presence": false,
+    "Discord_Rich_Presence": true,
     "Debug": true,
 
     "Discord_Bot": {
@@ -28,6 +28,7 @@
         "Keep_Serials": 0,
         "Keep_Copy": 0,
         "Creators_Blacklist": [],
+        "Default_Price_No_Competition": 1000,
         "Under_Cut": {
             "Type": "percent",
             "Value": 1
