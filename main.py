@@ -5,6 +5,7 @@ import os
 import traceback
 import asyncio
 import random
+import aiohttp
 from traceback import format_exc
 
 # ========== DEBUG MODE (controlled by config.json) ==========
@@ -120,7 +121,7 @@ core.main_tools.get_current_cap = get_current_cap
 class AutoSeller(ConfigLoader):
     __slots__ = ("config", "_items", "auth", "buy_checker", "blacklist",
                  "seen", "not_resable", "current_index", "done",
-                 "total_sold", "selling", "loaded_time", "control_panel")
+                 "total_sold", "selling", "loaded_time", "control_panel", "floor_caps")
 
     def __init__(self, config: dict, blacklist: FileSync, seen: FileSync, not_resable: FileSync) -> None:
         super().__init__(config)
@@ -139,6 +140,7 @@ class AutoSeller(ConfigLoader):
         self.selling = WithBool()
         self.loaded_time: datetime = None
         self.control_panel: ControlPanel = None
+        self.floor_caps = {}  # will be set in _load_items
 
     @property
     def items(self) -> List[Item]:
@@ -206,9 +208,8 @@ class AutoSeller(ConfigLoader):
                 self.not_resable.add(item_id)
                 self.remove_item(item_id)
 
-    # ========== MULTI‑API LOWEST PRICE CHECK (WITH RAW HTTP) ==========
+    # ========== MULTI‑API LOWEST PRICE CHECK (RAW HTTP) ==========
     async def get_lowest_price_multi(self, item_id: int, item_obj: Optional[Item] = None) -> Optional[int]:
-        import aiohttp
         prices = []
 
         async def fetch_price(url):
@@ -257,7 +258,7 @@ class AutoSeller(ConfigLoader):
         return None
     # ================================================================
 
-    # ========== SELL ITEM – NO AUTO BLACKLIST ==========
+    # ========== SELL ITEM WITH RETRY ON 412 (undercut → floor) ==========
     async def sell_item(self):
         item = self.current
         debug_print(f"Selling item: {item.name} (ID {item.id})")
@@ -265,15 +266,27 @@ class AutoSeller(ConfigLoader):
             f"Selling [g{len(item.collectibles)}x] of [g{item.name}] items...",
             "selling", Color(255, 153, 0))
 
-        # Skip if known non-resellable
         if item.id in self.not_resable:
             debug_print(f"Item {item.id} is marked as non-resellable. Skipping.")
             self.next_item()
             return
 
-        # Get the best available lowest price using all APIs
+        # Get floor for this item's asset type
+        asset_type = None
+        if hasattr(item, 'asset_type_id'):
+            for name, type_id in ITEM_TYPES.items():
+                if type_id == item.asset_type_id:
+                    asset_type = name
+                    break
+        floor = 5
+        if hasattr(self, 'floor_caps') and asset_type and asset_type in self.floor_caps:
+            floor = self.floor_caps[asset_type].get("priceFloor", 5)
+        debug_print(f"Price floor for {asset_type or 'unknown'}: {floor}")
+
+        # Get lowest market price
         lowest_price = await self.get_lowest_price_multi(item.id, item)
 
+        # Determine initial target price
         if lowest_price and lowest_price > 0:
             if self.under_cut_type == "percent":
                 undercut_amount = int(lowest_price * (self.under_cut_amount / 100))
@@ -281,26 +294,28 @@ class AutoSeller(ConfigLoader):
             else:
                 target_price = lowest_price - self.under_cut_amount
 
+            # Ensure at least 1 lower than lowest, but never below floor
+            target_price = max(target_price, floor)
             if target_price >= lowest_price:
-                target_price = lowest_price - 1
-
-            if target_price < 5:
-                target_price = 5
+                target_price = max(lowest_price - 1, floor)
 
             if target_price > 5000:
-                debug_print(f"WARNING: target_price {target_price} is very high. Capping to 5000.")
                 target_price = 5000
 
-            debug_print(f"Competition found (lowest={lowest_price}), undercut {self.under_cut_amount}{'%' if self.under_cut_type == 'percent' else ' Robux'} → {target_price}")
+            debug_print(f"Competition found (lowest={lowest_price}), undercut → {target_price}")
         else:
-            target_price = self.default_price_no_competition
-            debug_print(f"⚠️ No competition found for {item.name}! Using Default_Price_No_Competition: {target_price}")
+            target_price = max(self.default_price_no_competition, floor)
+            debug_print(f"No competition, using default (capped to floor): {target_price}")
 
-        item.price_to_sell = target_price
+        # Attempt to sell with retry on 412 (first try target_price, then floor if different)
+        prices_to_try = [target_price]
+        if target_price != floor:
+            prices_to_try.append(floor)
 
-        max_retries = 3
         sold_amount = None
-        for attempt in range(max_retries):
+        for attempt_idx, price in enumerate(prices_to_try):
+            item.price_to_sell = price
+            debug_print(f"Attempt {attempt_idx+1}/{len(prices_to_try)}: trying to sell at {price} Robux")
             try:
                 sold_amount = await item.sell_collectibles(
                     skip_on_sale=self.skip_on_sale,
@@ -312,22 +327,28 @@ class AutoSeller(ConfigLoader):
                         self.total_sold += sold_amount
                         if self.sale_webhook:
                             asyncio.create_task(self.send_sale_webhook(item, sold_amount))
-                    break
+                    break  # success
                 else:
+                    # No sale (maybe already on sale) – break
                     break
             except Exception as e:
                 error_msg = str(e).lower()
                 if "rate limit" in error_msg or "429" in error_msg:
-                    wait = 30 * (attempt + 1)
+                    wait = 30 * (attempt_idx + 1)
                     debug_print(f"Rate limited! Waiting {wait} seconds...")
                     await asyncio.sleep(wait)
+                    continue  # retry same price
                 elif "412" in error_msg or "precondition failed" in error_msg:
-                    debug_print(f"Item {item.id} returned 412 – not sellable. Skipping (no auto-blacklist).")
-                    break
+                    debug_print(f"412 at price {price}. Trying next price (if any).")
+                    continue  # try next price in list
                 else:
                     debug_print(f"Unexpected error: {e}")
                     break
 
+        if not sold_amount:
+            debug_print(f"Could not sell {item.name} after {len(prices_to_try)} attempt(s). Skipping.")
+
+        # Random delay between items
         delay = random.uniform(2, 5)
         debug_print(f"Waiting {delay:.1f} seconds before next item...")
         await asyncio.sleep(delay)
@@ -335,7 +356,7 @@ class AutoSeller(ConfigLoader):
         if self.save_progress and item.id in self._items:
             self.seen.add(item.id)
         self.next_item()
-    # ====================================================
+    # ================================================================
 
     def fetch_item_info(self, *, step_index: int = 1) -> Optional[Iterable[Task]]:
         try:
@@ -424,7 +445,6 @@ class AutoSeller(ConfigLoader):
                     self.current.price_to_sell = int(new_price)
                     Display.success(f"Successfully set a new price to sell! ([g${self.current.price_to_sell}])")
                 case "3":
-                    # Manual blacklist only
                     self.blacklist.add(self.current.id)
                     self.next_item()
                     Display.success(f"Successfully added [g{self.current.name} ({self.current.id})] into blacklist!")
@@ -457,6 +477,7 @@ class AutoSeller(ConfigLoader):
         items_cap = await get_current_cap(self.auth)
         if not items_cap:
             items_cap = {t: {"priceFloor": 5} for t in ITEM_TYPES.values()}
+        self.floor_caps = items_cap  # store for later use in sell_item
         ignored_items = list(self.seen | self.blacklist | self.not_resable)
         async for item, item_details, thumbnail in self.__fetch_items():
             item_id = item["assetId"]
@@ -482,6 +503,8 @@ class AutoSeller(ConfigLoader):
                     sell_price = self.default_price_no_competition
 
                 item_obj = Item(item, item_details, price_to_sell=sell_price, thumbnail=thumbnail, auth=self.auth)
+                # store asset type id for floor lookup
+                item_obj.asset_type_id = item_details["assetType"]
                 self.add_item(item_obj)
             item_obj.add_collectible(serial=item["serialNumber"], item_id=item["collectibleItemId"], instance_id=item["collectibleItemInstanceId"])
         if not self.items:
