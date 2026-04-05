@@ -121,7 +121,8 @@ core.main_tools.get_current_cap = get_current_cap
 class AutoSeller(ConfigLoader):
     __slots__ = ("config", "_items", "auth", "buy_checker", "blacklist",
                  "seen", "not_resable", "current_index", "done",
-                 "total_sold", "selling", "loaded_time", "control_panel", "floor_caps")
+                 "total_sold", "selling", "loaded_time", "control_panel",
+                 "floor_caps", "item_asset_types")  # added item_asset_types
 
     def __init__(self, config: dict, blacklist: FileSync, seen: FileSync, not_resable: FileSync) -> None:
         super().__init__(config)
@@ -140,7 +141,8 @@ class AutoSeller(ConfigLoader):
         self.selling = WithBool()
         self.loaded_time: datetime = None
         self.control_panel: ControlPanel = None
-        self.floor_caps = {}  # will be set in _load_items
+        self.floor_caps = {}
+        self.item_asset_types = {}  # map item.id -> asset_type_id
 
     @property
     def items(self) -> List[Item]:
@@ -271,15 +273,16 @@ class AutoSeller(ConfigLoader):
             self.next_item()
             return
 
-        # Get floor for this item's asset type
+        # Get floor for this item's asset type using stored mapping
+        asset_type_id = self.item_asset_types.get(item.id)
         asset_type = None
-        if hasattr(item, 'asset_type_id'):
-            for name, type_id in ITEM_TYPES.items():
-                if type_id == item.asset_type_id:
+        if asset_type_id is not None:
+            for name, tid in ITEM_TYPES.items():
+                if tid == asset_type_id:
                     asset_type = name
                     break
         floor = 5
-        if hasattr(self, 'floor_caps') and asset_type and asset_type in self.floor_caps:
+        if asset_type and asset_type in self.floor_caps:
             floor = self.floor_caps[asset_type].get("priceFloor", 5)
         debug_print(f"Price floor for {asset_type or 'unknown'}: {floor}")
 
@@ -477,7 +480,7 @@ class AutoSeller(ConfigLoader):
         items_cap = await get_current_cap(self.auth)
         if not items_cap:
             items_cap = {t: {"priceFloor": 5} for t in ITEM_TYPES.values()}
-        self.floor_caps = items_cap  # store for later use in sell_item
+        self.floor_caps = items_cap
         ignored_items = list(self.seen | self.blacklist | self.not_resable)
         async for item, item_details, thumbnail in self.__fetch_items():
             item_id = item["assetId"]
@@ -503,9 +506,9 @@ class AutoSeller(ConfigLoader):
                     sell_price = self.default_price_no_competition
 
                 item_obj = Item(item, item_details, price_to_sell=sell_price, thumbnail=thumbnail, auth=self.auth)
-                # store asset type id for floor lookup
-                item_obj.asset_type_id = item_details["assetType"]
                 self.add_item(item_obj)
+                # Store asset type id for floor lookup later
+                self.item_asset_types[item_id] = item_details["assetType"]
             item_obj.add_collectible(serial=item["serialNumber"], item_id=item["collectibleItemId"], instance_id=item["collectibleItemInstanceId"])
         if not self.items:
             Display.error("You dont have any limiteds that are not in blacklist")
