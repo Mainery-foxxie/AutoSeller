@@ -62,7 +62,6 @@ __all__ = ("AutoSeller",)
 FLOOR_FILE = "core/price_floors.json"
 
 def load_floors():
-    """Load saved price floors from file."""
     try:
         with open(FLOOR_FILE, "r") as f:
             return json.load(f)
@@ -70,7 +69,6 @@ def load_floors():
         return {}
 
 def save_floors(floors):
-    """Save price floors to file."""
     try:
         with open(FLOOR_FILE, "w") as f:
             json.dump(floors, f, indent=4)
@@ -78,7 +76,6 @@ def save_floors(floors):
         debug_print(f"Failed to save floors: {e}")
 
 def update_floor(asset_type_name: str, observed_price: int):
-    """Update the floor for an asset type if observed_price is lower."""
     floors = load_floors()
     current = floors.get(asset_type_name)
     if current is None or observed_price < current:
@@ -88,7 +85,6 @@ def update_floor(asset_type_name: str, observed_price: int):
     return floors.get(asset_type_name, observed_price)
 
 def get_floor(asset_type_name: str) -> Optional[int]:
-    """Get the saved floor for an asset type."""
     return load_floors().get(asset_type_name)
 # =============================================================
 
@@ -133,11 +129,11 @@ async def get_current_cap(auth):
         debug_print(f"Failed to scan your own items: {e}")
 
     default_floors = {
-        "Emote": 25, "Hat": 50, "HairAccessory": 50, "FaceAccessory": 50,
-        "NeckAccessory": 50, "ShoulderAccessory": 100, "FrontAccessory": 50,
-        "BackAccessory": 100, "WaistAccessory": 50, "TShirtAccessory": 5,
-        "ShirtAccessory": 5, "PantsAccessory": 5, "JacketAccessory": 5,
-        "SweaterAccessory": 5, "ShortsAccessory": 5, "DressSkirtAccessory": 5,
+        "Emote": 50, "Hat": 90, "HairAccessory": 60, "FaceAccessory": 90,
+        "NeckAccessory": 50, "ShoulderAccessory": 50, "FrontAccessory": 50,
+        "BackAccessory": 135, "WaistAccessory": 60, "TShirtAccessory": 61,
+        "ShirtAccessory": 55, "PantsAccessory": 65, "JacketAccessory": 60,
+        "SweaterAccessory": 61, "ShortsAccessory": 55, "DressSkirtAccessory": 55,
     }
     for asset_type_name in ITEM_TYPES.values():
         if caps.get(asset_type_name) is None:
@@ -297,20 +293,15 @@ class AutoSeller(ConfigLoader):
             f"Selling [g{len(item.collectibles)}x] of [g{item.name}] items...",
             "selling", Color(255, 153, 0))
 
-        # Get asset type name (e.g., "Hat", "Emote")
-        asset_type_name = None
-        for name, type_id in ITEM_TYPES.items():
-            if type_id == item._collectibles[list(item._collectibles.keys())[0]].item_type:  # hacky; better to get from item details
-                asset_type_name = name
-                break
-        if not asset_type_name:
-            # Fallback: try to infer from item's assetType (not stored directly in Item object)
-            # We'll just use a default
-            asset_type_name = "Unknown"
+        # Get asset type name (stored during item creation)
+        asset_type_name = getattr(item, 'asset_type_name', 'Unknown')
+        debug_print(f"Asset type: {asset_type_name}")
 
         # Get the floor for this asset type
         floor = get_floor(asset_type_name)
-        debug_print(f"Floor for {asset_type_name}: {floor}")
+        if floor is None:
+            floor = 5
+            debug_print(f"No floor found for {asset_type_name}, using default 5")
 
         # Get current lowest price
         lowest_price = await self.get_lowest_price_multi(item.id, item)
@@ -521,10 +512,12 @@ class AutoSeller(ConfigLoader):
                 continue
             item_obj = self.get_item(item_id)
             if item_obj is None:
-                asset_type = ITEM_TYPES.get(item_details["assetType"])
-                if not asset_type:
+                asset_type_id = item_details["assetType"]
+                asset_type_name = ITEM_TYPES.get(asset_type_id, "Unknown")
+                if asset_type_name == "Unknown":
+                    debug_print(f"Unknown asset type ID {asset_type_id} for item {item_id}, skipping")
                     continue
-                asset_cap = items_cap.get(asset_type, {}).get("priceFloor", 5)
+                asset_cap = items_cap.get(asset_type_name, {}).get("priceFloor", 5)
 
                 lowest_resale = item_details.get("lowestResalePrice")
                 if lowest_resale and lowest_resale > 0:
@@ -538,7 +531,9 @@ class AutoSeller(ConfigLoader):
                 else:
                     sell_price = self.default_price_no_competition
 
+                # Create the Item object and add the custom attribute
                 item_obj = Item(item, item_details, price_to_sell=sell_price, thumbnail=thumbnail, auth=self.auth)
+                item_obj.asset_type_name = asset_type_name   # <-- store asset type name on the item
                 self.add_item(item_obj)
             item_obj.add_collectible(serial=item["serialNumber"], item_id=item["collectibleItemId"], instance_id=item["collectibleItemInstanceId"])
         if not self.items:
