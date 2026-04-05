@@ -17,7 +17,7 @@ class Item:
                  "_creator_id", "creator_name", "_creator_link",
                  "recent_average_price", "has_resales", "latest_sale",
                  "has_sales", "price_to_sell", "auth", "_collectibles",
-                 "resales", "sales")
+                 "resales", "sales", "asset_type_name")   # <-- added asset_type_name
 
     def __init__(
         self,
@@ -26,7 +26,8 @@ class Item:
         *,
         thumbnail: Optional[str] = None,
         price_to_sell: Optional[int] = None,
-        auth: Optional[Auth] = None
+        auth: Optional[Auth] = None,
+        asset_type_name: Optional[str] = None   # <-- new parameter
     ) -> None:
         self._id = item_info["assetId"]
         self.item_id = item_info["collectibleItemId"]
@@ -52,6 +53,7 @@ class Item:
         self._collectibles = {}
         self.resales = []
         self.sales = []
+        self.asset_type_name = asset_type_name   # <-- store it
 
     id = IgnoreNew()
     link = IgnoreNew()
