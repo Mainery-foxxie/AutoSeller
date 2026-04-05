@@ -5,7 +5,6 @@ import os
 import traceback
 import asyncio
 import random
-import aiohttp
 from traceback import format_exc
 
 # ========== DEBUG MODE (controlled by config.json) ==========
@@ -121,8 +120,7 @@ core.main_tools.get_current_cap = get_current_cap
 class AutoSeller(ConfigLoader):
     __slots__ = ("config", "_items", "auth", "buy_checker", "blacklist",
                  "seen", "not_resable", "current_index", "done",
-                 "total_sold", "selling", "loaded_time", "control_panel",
-                 "floor_caps", "item_asset_types")  # added item_asset_types
+                 "total_sold", "selling", "loaded_time", "control_panel")
 
     def __init__(self, config: dict, blacklist: FileSync, seen: FileSync, not_resable: FileSync) -> None:
         super().__init__(config)
@@ -141,8 +139,6 @@ class AutoSeller(ConfigLoader):
         self.selling = WithBool()
         self.loaded_time: datetime = None
         self.control_panel: ControlPanel = None
-        self.floor_caps = {}
-        self.item_asset_types = {}  # map item.id -> asset_type_id
 
     @property
     def items(self) -> List[Item]:
@@ -210,7 +206,7 @@ class AutoSeller(ConfigLoader):
                 self.not_resable.add(item_id)
                 self.remove_item(item_id)
 
-    # ========== MULTI‑API LOWEST PRICE CHECK (RAW HTTP) ==========
+    # ========== MULTI‑API LOWEST PRICE CHECK ==========
     async def get_lowest_price_multi(self, item_id: int, item_obj: Optional[Item] = None) -> Optional[int]:
         prices = []
 
@@ -219,17 +215,15 @@ class AutoSeller(ConfigLoader):
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
                 "Accept": "application/json",
                 "Referer": "https://www.roblox.com/",
-                "Cookie": self.auth.cookie,
             }
             try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(url, headers=headers) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            if data.get("data") and len(data["data"]) > 0:
-                                return data["data"][0].get("price", 0)
-                        else:
-                            debug_print(f"API {url} returned {resp.status}")
+                async with self.auth.get(url, headers=headers) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if data.get("data") and len(data["data"]) > 0:
+                            return data["data"][0].get("price", 0)
+                    else:
+                        debug_print(f"API {url} returned {resp.status}")
             except Exception as e:
                 debug_print(f"Request error for {url}: {e}")
             return None
@@ -258,9 +252,8 @@ class AutoSeller(ConfigLoader):
             debug_print(f"All prices: {prices}, lowest: {lowest}")
             return lowest
         return None
-    # ================================================================
+    # ==================================================
 
-    # ========== SELL ITEM WITH RETRY ON 412 (undercut → floor) ==========
     async def sell_item(self):
         item = self.current
         debug_print(f"Selling item: {item.name} (ID {item.id})")
@@ -268,28 +261,8 @@ class AutoSeller(ConfigLoader):
             f"Selling [g{len(item.collectibles)}x] of [g{item.name}] items...",
             "selling", Color(255, 153, 0))
 
-        if item.id in self.not_resable:
-            debug_print(f"Item {item.id} is marked as non-resellable. Skipping.")
-            self.next_item()
-            return
-
-        # Get floor for this item's asset type using stored mapping
-        asset_type_id = self.item_asset_types.get(item.id)
-        asset_type = None
-        if asset_type_id is not None:
-            for name, tid in ITEM_TYPES.items():
-                if tid == asset_type_id:
-                    asset_type = name
-                    break
-        floor = 5
-        if asset_type and asset_type in self.floor_caps:
-            floor = self.floor_caps[asset_type].get("priceFloor", 5)
-        debug_print(f"Price floor for {asset_type or 'unknown'}: {floor}")
-
-        # Get lowest market price
         lowest_price = await self.get_lowest_price_multi(item.id, item)
 
-        # Determine initial target price
         if lowest_price and lowest_price > 0:
             if self.under_cut_type == "percent":
                 undercut_amount = int(lowest_price * (self.under_cut_amount / 100))
@@ -297,28 +270,22 @@ class AutoSeller(ConfigLoader):
             else:
                 target_price = lowest_price - self.under_cut_amount
 
-            # Ensure at least 1 lower than lowest, but never below floor
-            target_price = max(target_price, floor)
             if target_price >= lowest_price:
-                target_price = max(lowest_price - 1, floor)
+                target_price = lowest_price - 1
 
-            if target_price > 5000:
-                target_price = 5000
+            if target_price < 5:
+                target_price = 5
 
-            debug_print(f"Competition found (lowest={lowest_price}), undercut → {target_price}")
+            debug_print(f"Competition found (lowest={lowest_price}), undercut {self.under_cut_amount}{'%' if self.under_cut_type == 'percent' else ' Robux'} → {target_price}")
         else:
-            target_price = max(self.default_price_no_competition, floor)
-            debug_print(f"No competition, using default (capped to floor): {target_price}")
+            target_price = self.default_price_no_competition
+            debug_print(f"⚠️ No competition found for {item.name}! Using Default_Price_No_Competition: {target_price}")
 
-        # Attempt to sell with retry on 412 (first try target_price, then floor if different)
-        prices_to_try = [target_price]
-        if target_price != floor:
-            prices_to_try.append(floor)
+        item.price_to_sell = target_price
 
+        max_retries = 3
         sold_amount = None
-        for attempt_idx, price in enumerate(prices_to_try):
-            item.price_to_sell = price
-            debug_print(f"Attempt {attempt_idx+1}/{len(prices_to_try)}: trying to sell at {price} Robux")
+        for attempt in range(max_retries):
             try:
                 sold_amount = await item.sell_collectibles(
                     skip_on_sale=self.skip_on_sale,
@@ -330,28 +297,22 @@ class AutoSeller(ConfigLoader):
                         self.total_sold += sold_amount
                         if self.sale_webhook:
                             asyncio.create_task(self.send_sale_webhook(item, sold_amount))
-                    break  # success
+                    break
                 else:
-                    # No sale (maybe already on sale) – break
                     break
             except Exception as e:
                 error_msg = str(e).lower()
                 if "rate limit" in error_msg or "429" in error_msg:
-                    wait = 30 * (attempt_idx + 1)
+                    wait = 30 * (attempt + 1)
                     debug_print(f"Rate limited! Waiting {wait} seconds...")
                     await asyncio.sleep(wait)
-                    continue  # retry same price
                 elif "412" in error_msg or "precondition failed" in error_msg:
-                    debug_print(f"412 at price {price}. Trying next price (if any).")
-                    continue  # try next price in list
+                    debug_print(f"Item {item.id} returned 412 – not sellable. Skipping.")
+                    break
                 else:
                     debug_print(f"Unexpected error: {e}")
                     break
 
-        if not sold_amount:
-            debug_print(f"Could not sell {item.name} after {len(prices_to_try)} attempt(s). Skipping.")
-
-        # Random delay between items
         delay = random.uniform(2, 5)
         debug_print(f"Waiting {delay:.1f} seconds before next item...")
         await asyncio.sleep(delay)
@@ -359,7 +320,6 @@ class AutoSeller(ConfigLoader):
         if self.save_progress and item.id in self._items:
             self.seen.add(item.id)
         self.next_item()
-    # ================================================================
 
     def fetch_item_info(self, *, step_index: int = 1) -> Optional[Iterable[Task]]:
         try:
@@ -480,7 +440,6 @@ class AutoSeller(ConfigLoader):
         items_cap = await get_current_cap(self.auth)
         if not items_cap:
             items_cap = {t: {"priceFloor": 5} for t in ITEM_TYPES.values()}
-        self.floor_caps = items_cap
         ignored_items = list(self.seen | self.blacklist | self.not_resable)
         async for item, item_details, thumbnail in self.__fetch_items():
             item_id = item["assetId"]
@@ -507,8 +466,6 @@ class AutoSeller(ConfigLoader):
 
                 item_obj = Item(item, item_details, price_to_sell=sell_price, thumbnail=thumbnail, auth=self.auth)
                 self.add_item(item_obj)
-                # Store asset type id for floor lookup later
-                self.item_asset_types[item_id] = item_details["assetType"]
             item_obj.add_collectible(serial=item["serialNumber"], item_id=item["collectibleItemId"], instance_id=item["collectibleItemInstanceId"])
         if not self.items:
             Display.error("You dont have any limiteds that are not in blacklist")
