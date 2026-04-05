@@ -5,6 +5,7 @@ import os
 import traceback
 import asyncio
 import random
+import json
 from traceback import format_exc
 
 # ========== DEBUG MODE (controlled by config.json) ==========
@@ -56,6 +57,40 @@ except ModuleNotFoundError as e:
     sys.exit(1)
 
 __all__ = ("AutoSeller",)
+
+# ==================== PRICE FLOOR MANAGER ====================
+FLOOR_FILE = "core/price_floors.json"
+
+def load_floors():
+    """Load saved price floors from file."""
+    try:
+        with open(FLOOR_FILE, "r") as f:
+            return json.load(f)
+    except:
+        return {}
+
+def save_floors(floors):
+    """Save price floors to file."""
+    try:
+        with open(FLOOR_FILE, "w") as f:
+            json.dump(floors, f, indent=4)
+    except Exception as e:
+        debug_print(f"Failed to save floors: {e}")
+
+def update_floor(asset_type_name: str, observed_price: int):
+    """Update the floor for an asset type if observed_price is lower."""
+    floors = load_floors()
+    current = floors.get(asset_type_name)
+    if current is None or observed_price < current:
+        floors[asset_type_name] = observed_price
+        save_floors(floors)
+        debug_print(f"Updated floor for {asset_type_name}: {observed_price}")
+    return floors.get(asset_type_name, observed_price)
+
+def get_floor(asset_type_name: str) -> Optional[int]:
+    """Get the saved floor for an asset type."""
+    return load_floors().get(asset_type_name)
+# =============================================================
 
 # ==================== AUTOMATIC FLOOR DETECTION ====================
 async def get_current_cap(auth):
@@ -254,6 +289,7 @@ class AutoSeller(ConfigLoader):
         return None
     # ==================================================
 
+    # ========== FIXED SELL WITH FLOOR PROTECTION ==========
     async def sell_item(self):
         item = self.current
         debug_print(f"Selling item: {item.name} (ID {item.id})")
@@ -261,28 +297,65 @@ class AutoSeller(ConfigLoader):
             f"Selling [g{len(item.collectibles)}x] of [g{item.name}] items...",
             "selling", Color(255, 153, 0))
 
+        # Get asset type name (e.g., "Hat", "Emote")
+        asset_type_name = None
+        for name, type_id in ITEM_TYPES.items():
+            if type_id == item._collectibles[list(item._collectibles.keys())[0]].item_type:  # hacky; better to get from item details
+                asset_type_name = name
+                break
+        if not asset_type_name:
+            # Fallback: try to infer from item's assetType (not stored directly in Item object)
+            # We'll just use a default
+            asset_type_name = "Unknown"
+
+        # Get the floor for this asset type
+        floor = get_floor(asset_type_name)
+        debug_print(f"Floor for {asset_type_name}: {floor}")
+
+        # Get current lowest price
         lowest_price = await self.get_lowest_price_multi(item.id, item)
 
         if lowest_price and lowest_price > 0:
-            if self.under_cut_type == "percent":
-                undercut_amount = int(lowest_price * (self.under_cut_amount / 100))
-                target_price = lowest_price - undercut_amount
-            else:
-                target_price = lowest_price - self.under_cut_amount
+            # Update floor if this price is lower than saved
+            new_floor = update_floor(asset_type_name, lowest_price)
+            if new_floor != floor:
+                floor = new_floor
 
-            if target_price >= lowest_price:
-                target_price = lowest_price - 1
+            # If the lowest price equals the floor, do NOT undercut – sell at floor
+            if lowest_price == floor:
+                target_price = floor
+                debug_print(f"Lowest price ({lowest_price}) equals floor ({floor}). Selling at floor, no undercut.")
+            else:
+                # Apply undercut
+                if self.under_cut_type == "percent":
+                    undercut_amount = int(lowest_price * (self.under_cut_amount / 100))
+                    target_price = lowest_price - undercut_amount
+                else:
+                    target_price = lowest_price - self.under_cut_amount
+
+                # Ensure we are at least 1 lower, but never below floor
+                if target_price >= lowest_price:
+                    target_price = lowest_price - 1
+                if target_price < floor:
+                    debug_print(f"Undercut price {target_price} would be below floor {floor}. Setting to floor.")
+                    target_price = floor
 
             if target_price < 5:
                 target_price = 5
 
-            debug_print(f"Competition found (lowest={lowest_price}), undercut {self.under_cut_amount}{'%' if self.under_cut_type == 'percent' else ' Robux'} → {target_price}")
+            debug_print(f"Competition found (lowest={lowest_price}), undercut applied → {target_price}")
         else:
+            # No competition – use configurable default
             target_price = self.default_price_no_competition
+            # But also respect floor: if default is below floor, use floor
+            if floor and target_price < floor:
+                debug_print(f"Default price {target_price} below floor {floor}, raising to floor.")
+                target_price = floor
             debug_print(f"⚠️ No competition found for {item.name}! Using Default_Price_No_Competition: {target_price}")
 
         item.price_to_sell = target_price
 
+        # Attempt to sell
         max_retries = 3
         sold_amount = None
         for attempt in range(max_retries):
@@ -320,6 +393,7 @@ class AutoSeller(ConfigLoader):
         if self.save_progress and item.id in self._items:
             self.seen.add(item.id)
         self.next_item()
+    # =========================================================
 
     def fetch_item_info(self, *, step_index: int = 1) -> Optional[Iterable[Task]]:
         try:
