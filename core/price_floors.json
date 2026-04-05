@@ -1,0 +1,19 @@
+{
+    "Emote": 50,
+    "Hat": 90,
+    "HairAccessory": 60,
+    "FaceAccessory": 90,
+    "NeckAccessory": 50,
+    "ShoulderAccessory": 50,
+    "FrontAccessory": 50,
+    "BackAccessory": 135,
+    "WaistAccessory": 60,
+    "TShirtAccessory": 61,
+    "ShirtAccessory": 55,
+    "PantsAccessory": 65,
+    "JacketAccessory": 60,
+    "SweaterAccessory": 61,
+    "ShortsAccessory": 55,
+    "DressSkirtAccessory": 55,
+    "Unknown": 5
+}
