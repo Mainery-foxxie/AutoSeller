@@ -531,9 +531,14 @@ class AutoSeller(ConfigLoader):
                 else:
                     sell_price = self.default_price_no_competition
 
-                # Create the Item object and add the custom attribute
-                item_obj = Item(item, item_details, price_to_sell=sell_price, thumbnail=thumbnail, auth=self.auth)
-                item_obj.asset_type_name = asset_type_name   # <-- store asset type name on the item
+                # Create Item with asset_type_name parameter
+                item_obj = Item(
+                    item, item_details,
+                    price_to_sell=sell_price,
+                    thumbnail=thumbnail,
+                    auth=self.auth,
+                    asset_type_name=asset_type_name   # <-- pass it here
+                )
                 self.add_item(item_obj)
             item_obj.add_collectible(serial=item["serialNumber"], item_id=item["collectibleItemId"], instance_id=item["collectibleItemInstanceId"])
         if not self.items:
