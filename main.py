@@ -259,31 +259,27 @@ class AutoSeller(ConfigLoader):
                 debug_print(f"Request error for {url}: {e}")
             return None
 
-        # Stored price (fallback)
         if item_obj and item_obj.lowest_resale_price and item_obj.lowest_resale_price > 0:
             prices.append(item_obj.lowest_resale_price)
             debug_print(f"Stored lowest_resale_price: {item_obj.lowest_resale_price}")
 
-        # 1. economy.roblox.com (numeric assetId)
-        url1 = f"https://economy.roblox.com/v1/assets/{item_id}/resellers"
-        price1 = await fetch_price(url1)
+        # economy.roblox.com (numeric assetId)
+        price1 = await fetch_price(f"https://economy.roblox.com/v1/assets/{item_id}/resellers")
         if price1:
             prices.append(price1)
             debug_print(f"economy.roblox.com price: {price1}")
 
-        # 2. marketplace-sales API (requires collectibleItemId – UUID)
+        # marketplace-sales API (requires collectibleItemId – UUID)
         if item_obj and item_obj.item_id:
-            url2 = f"https://apis.roblox.com/marketplace-sales/v1/item/{item_obj.item_id}/resellers?limit=1"
-            price2 = await fetch_price(url2)
+            price2 = await fetch_price(f"https://apis.roblox.com/marketplace-sales/v1/item/{item_obj.item_id}/resellers?limit=1")
             if price2:
                 prices.append(price2)
                 debug_print(f"marketplace-sales API price: {price2}")
         else:
             debug_print("No collectibleItemId available for marketplace-sales API")
 
-        # 3. catalog.roblox.com (numeric assetId)
-        url3 = f"https://catalog.roblox.com/v1/assets/{item_id}/resellers"
-        price3 = await fetch_price(url3)
+        # catalog.roblox.com (numeric assetId)
+        price3 = await fetch_price(f"https://catalog.roblox.com/v1/assets/{item_id}/resellers")
         if price3:
             prices.append(price3)
             debug_print(f"catalog.roblox.com price: {price3}")
@@ -295,6 +291,7 @@ class AutoSeller(ConfigLoader):
         return None
     # ==================================================
 
+    # ========== SELL_ITEM WITH FLOOR UPDATE ON 403 ==========
     async def sell_item(self):
         item = self.current
         debug_print(f"Selling item: {item.name} (ID {item.id})")
@@ -313,45 +310,40 @@ class AutoSeller(ConfigLoader):
         lowest_price = await self.get_lowest_price_multi(item.id, item)
 
         if lowest_price and lowest_price > 0:
-            # Update floor if this price is lower than saved
-            new_floor = update_floor(asset_type_name, lowest_price)
-            if new_floor != floor:
-                floor = new_floor
+            if lowest_price < floor:
+                floor = update_floor(asset_type_name, lowest_price)
+                debug_print(f"Updated floor to {floor} based on live price")
 
-            # If the lowest price equals the floor, do NOT undercut – sell at floor
             if lowest_price == floor:
                 target_price = floor
-                debug_print(f"Lowest price ({lowest_price}) equals floor ({floor}). Selling at floor, no undercut.")
+                debug_print(f"Lowest price equals floor ({floor}). Selling at floor.")
             else:
-                # Apply undercut
                 if self.under_cut_type == "percent":
                     undercut_amount = int(lowest_price * (self.under_cut_amount / 100))
                     target_price = lowest_price - undercut_amount
                 else:
                     target_price = lowest_price - self.under_cut_amount
 
-                # Ensure we are at least 1 lower, but never below floor
                 if target_price >= lowest_price:
                     target_price = lowest_price - 1
                 if target_price < floor:
-                    debug_print(f"Undercut price {target_price} would be below floor {floor}. Setting to floor.")
+                    debug_print(f"Undercut would go below floor {floor}, selling at floor instead.")
                     target_price = floor
 
             if target_price < 5:
                 target_price = 5
-
-            debug_print(f"Competition found (lowest={lowest_price}), undercut applied → {target_price}")
+            debug_print(f"Target price: {target_price}")
         else:
             target_price = self.default_price_no_competition
             if floor and target_price < floor:
                 debug_print(f"Default price {target_price} below floor {floor}, raising to floor.")
                 target_price = floor
-            debug_print(f"⚠️ No competition found for {item.name}! Using Default_Price_No_Competition: {target_price}")
+            debug_print(f"No competition, using default price: {target_price}")
 
         item.price_to_sell = target_price
 
-        # Attempt to sell (with one retry if sold_amount == 0)
-        max_attempts = 2
+        # Attempt to sell with retry and floor adjustment on 403
+        max_attempts = 3
         sold_amount = None
         for attempt in range(max_attempts):
             try:
@@ -365,11 +357,7 @@ class AutoSeller(ConfigLoader):
                     if self.sale_webhook:
                         asyncio.create_task(self.send_sale_webhook(item, sold_amount))
                     break
-                elif attempt == 0 and sold_amount == 0:
-                    debug_print("First sell attempt sold nothing – forcing collectibles refresh and retrying...")
-                    await item.fetch_collectibles()
-                    continue
-                else:
+                elif sold_amount == 0:
                     break
             except Exception as e:
                 error_msg = str(e).lower()
@@ -377,6 +365,14 @@ class AutoSeller(ConfigLoader):
                     wait = 30 * (attempt + 1)
                     debug_print(f"Rate limited! Waiting {wait} seconds...")
                     await asyncio.sleep(wait)
+                elif "403" in error_msg or "forbidden" in error_msg:
+                    # Update floor to the price we attempted
+                    new_floor = item.price_to_sell
+                    debug_print(f"403 Forbidden at price {new_floor}. Updating floor for {asset_type_name} to {new_floor}")
+                    update_floor(asset_type_name, new_floor)
+                    item.price_to_sell = new_floor
+                    debug_print(f"Retrying to sell at floor {new_floor}...")
+                    continue
                 elif "412" in error_msg or "precondition failed" in error_msg:
                     debug_print(f"Item {item.id} returned 412 – not sellable. Skipping.")
                     break
@@ -391,6 +387,7 @@ class AutoSeller(ConfigLoader):
         if self.save_progress and item.id in self._items:
             self.seen.add(item.id)
         self.next_item()
+    # =========================================================
 
     def fetch_item_info(self, *, step_index: int = 1) -> Optional[Iterable[Task]]:
         try:
