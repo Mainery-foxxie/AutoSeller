@@ -237,7 +237,7 @@ class AutoSeller(ConfigLoader):
                 self.not_resable.add(item_id)
                 self.remove_item(item_id)
 
-    # ========== MULTI‑API LOWEST PRICE CHECK (FIXED) ==========
+    # ========== MULTI‑API LOWEST PRICE CHECK ==========
     async def get_lowest_price_multi(self, item_id: int, item_obj: Optional[Item] = None) -> Optional[int]:
         prices = []
 
@@ -263,13 +263,11 @@ class AutoSeller(ConfigLoader):
             prices.append(item_obj.lowest_resale_price)
             debug_print(f"Stored lowest_resale_price: {item_obj.lowest_resale_price}")
 
-        # economy.roblox.com (numeric assetId)
         price1 = await fetch_price(f"https://economy.roblox.com/v1/assets/{item_id}/resellers")
         if price1:
             prices.append(price1)
             debug_print(f"economy.roblox.com price: {price1}")
 
-        # marketplace-sales API (requires collectibleItemId – UUID)
         if item_obj and item_obj.item_id:
             price2 = await fetch_price(f"https://apis.roblox.com/marketplace-sales/v1/item/{item_obj.item_id}/resellers?limit=1")
             if price2:
@@ -278,7 +276,6 @@ class AutoSeller(ConfigLoader):
         else:
             debug_print("No collectibleItemId available for marketplace-sales API")
 
-        # catalog.roblox.com (numeric assetId)
         price3 = await fetch_price(f"https://catalog.roblox.com/v1/assets/{item_id}/resellers")
         if price3:
             prices.append(price3)
@@ -366,9 +363,9 @@ class AutoSeller(ConfigLoader):
                     debug_print(f"Rate limited! Waiting {wait} seconds...")
                     await asyncio.sleep(wait)
                 elif "403" in error_msg or "forbidden" in error_msg:
-                    # Update floor to the price we attempted
-                    new_floor = item.price_to_sell
-                    debug_print(f"403 Forbidden at price {new_floor}. Updating floor for {asset_type_name} to {new_floor}")
+                    # Use the original lowest market price as the new floor, not the undercut price
+                    new_floor = lowest_price if lowest_price else item.price_to_sell
+                    debug_print(f"403 Forbidden at price {item.price_to_sell}. Updating floor for {asset_type_name} to {new_floor}")
                     update_floor(asset_type_name, new_floor)
                     item.price_to_sell = new_floor
                     debug_print(f"Retrying to sell at floor {new_floor}...")
