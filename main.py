@@ -255,11 +255,9 @@ class AutoSeller(ConfigLoader):
                         if expected_key == "data" and data.get("data") and len(data["data"]) > 0:
                             return data["data"][0].get("price", 0)
                         elif expected_key == "priceDataPoints" and data.get("priceDataPoints"):
-                            # For resale-data endpoint, get the minimum sale price
                             min_price = min(p["value"] for p in data["priceDataPoints"])
                             return min_price
                         else:
-                            # Fallback: try to get price directly
                             return data.get("price", 0)
                     else:
                         debug_print(f"API {url} returned {resp.status}")
@@ -267,31 +265,26 @@ class AutoSeller(ConfigLoader):
                 debug_print(f"Request error for {url}: {e}")
             return None
 
-        # 1. Stored price from inventory (fallback)
         if item_obj and item_obj.lowest_resale_price and item_obj.lowest_resale_price > 0:
             prices.append(item_obj.lowest_resale_price)
             debug_print(f"Stored lowest_resale_price: {item_obj.lowest_resale_price}")
 
-        # 2. economy.roblox.com/v1/assets/{id}/resellers
         price1 = await fetch_price(f"https://economy.roblox.com/v1/assets/{item_id}/resellers")
         if price1:
             prices.append(price1)
             debug_print(f"economy.roblox.com price: {price1}")
 
-        # 3. marketplace-sales API (needs UUID)
         if item_obj and item_obj.item_id:
             price2 = await fetch_price(f"https://apis.roblox.com/marketplace-sales/v1/item/{item_obj.item_id}/resellers?limit=1")
             if price2:
                 prices.append(price2)
                 debug_print(f"marketplace-sales API price: {price2}")
 
-        # 4. catalog.roblox.com
         price3 = await fetch_price(f"https://catalog.roblox.com/v1/assets/{item_id}/resellers")
         if price3:
             prices.append(price3)
             debug_print(f"catalog.roblox.com price: {price3}")
 
-        # 5. resale-data endpoint (actual sale history)
         price4 = await fetch_price(f"https://economy.roblox.com/v1/assets/{item_id}/resale-data", expected_key="priceDataPoints")
         if price4:
             prices.append(price4)
@@ -320,7 +313,6 @@ class AutoSeller(ConfigLoader):
             floor = 5
             debug_print(f"No floor found for {asset_type_name}, using default 5")
 
-        # Get the best available lowest price from all APIs
         lowest_price = await self.get_lowest_price_multi(item.id, item)
 
         if lowest_price and lowest_price > 0:
@@ -356,7 +348,6 @@ class AutoSeller(ConfigLoader):
 
         item.price_to_sell = target_price
 
-        # Attempt to sell with retry and floor adjustment on 403
         max_attempts = 2
         sold_amount = None
         for attempt in range(max_attempts):
@@ -380,7 +371,6 @@ class AutoSeller(ConfigLoader):
                     debug_print(f"Rate limited! Waiting {wait} seconds...")
                     await asyncio.sleep(wait)
                 elif "403" in error_msg or "forbidden" in error_msg:
-                    # Update floor to the market price (lowest_price) not the undercut
                     new_floor = lowest_price if lowest_price else item.price_to_sell
                     debug_print(f"403 Forbidden at price {item.price_to_sell}. Updating floor for {asset_type_name} to {new_floor}")
                     update_floor(asset_type_name, new_floor)
@@ -447,10 +437,14 @@ class AutoSeller(ConfigLoader):
         except:
             return Display.exception(f"Unknown error occurred:\n\n{format_exc()}")
 
+    # ========== FIXED start_selling (handles None from fetch_item_info) ==========
     async def start_selling(self):
         for i in range(2):
-            for task in self.fetch_item_info(step_index=i):
-                await task
+            tasks = self.fetch_item_info(step_index=i)
+            if tasks is not None:
+                for task in tasks:
+                    if task is not None:
+                        await task
         if self.auto_sell:
             await self._auto_sell_items()
         else:
@@ -462,6 +456,7 @@ class AutoSeller(ConfigLoader):
             self.seen.clear()
             Display.success("Cleared your limiteds selling progress")
             Tools.exit_program()
+    # =============================================================================
 
     async def _auto_sell_items(self):
         while not self.done:
