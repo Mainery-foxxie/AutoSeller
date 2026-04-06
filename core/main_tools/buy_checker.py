@@ -37,29 +37,32 @@ class Transaction:
     async def make_embed(self, collectible: Collectible, auth: Auth, user_to_ping: Optional[int] = None) -> dict:
         item = collectible.item
 
+        # Get buyer thumbnail (async)
+        buyer_thumbnails = await get_users_thumbnails((str(self.buyer_id),), auth)
+        buyer_thumbnail = buyer_thumbnails[0] if buyer_thumbnails else None
+
         embed = discord.Embed(
             title="Someone Bought Your Item",
-            description=f"**Item name: **`{item.name}`\n"
-                        f"**Item Serial: **`{collectible.serial}`"
-                        f"**Sold for: **`${self.sold_for * 2} (you got ${self.sold_for})`\n"
-                        f"**Sold at: **<t:{self.created_at:.0f}:f>",
+            description=f"**Item name:** `{item.name}`\n"
+                        f"**Item Serial:** `{collectible.serial}`\n"
+                        f"**Sold for:** `{self.sold_for * 2} (you got {self.sold_for})`\n"
+                        f"**Sold at:** <t:{int(self.created_at.timestamp())}:f>",
             url=item.link,
             timestamp=datetime.now(),
             color=2469096,
         )
         embed.set_footer(text="Was sold at")
         embed.set_thumbnail(url=item.thumbnail)
-
-        buyer_thumbnail = get_users_thumbnails((self.buyer_id,), auth)
-        embed.set_author(name=self.buyer_name,
-                         url=f"https://www.roblox.com/users/{self.buyer_id}/profile",
-                         icon_url=buyer_thumbnail)
+        embed.set_author(
+            name=self.buyer_name,
+            url=f"https://www.roblox.com/users/{self.buyer_id}/profile",
+            icon_url=buyer_thumbnail or discord.Embed.Empty
+        )
 
         data = {
-            "content": user_to_ping,
+            "content": f"<@{user_to_ping}>" if user_to_ping else "",
             "embeds": [embed.to_dict()]
         }
-
         return data
 
 
@@ -72,53 +75,55 @@ class BuyChecker:
     async def start(self):
         while True:
             await asyncio.sleep(self.interval)
-            new_sales = self._fetch_new_sales()
-
-            async for sale, col in new_sales:
+            async for sale, col in self._fetch_new_sales():
                 await self.send_webhook(col, sale)
 
     async def _fetch_existing_sales(self) -> AsyncGenerator[Transaction]:
-        sales = [Transaction(sale) for sale in await get_recent_sales(self._seller.auth)]
+        recent = await get_recent_sales(self._seller.auth)
+        if not recent:
+            return
+        sales = [Transaction(sale) for sale in recent]
 
         for sale in sales:
-            if (
-                sale.item_type != "Asset"
-                or sale.created_at < self._seller.loaded_time
-            ):
+            if sale.item_type != "Asset" or sale.created_at < self._seller.loaded_time:
                 continue
-
             item = self._seller.get_item(sale.item_id)
             if item is None:
                 continue
-
             yield sale
 
     async def _fetch_new_sales(self) -> AsyncGenerator[tuple[Transaction, Collectible]]:
         async for sale in self._fetch_existing_sales():
             item = self._seller.get_item(sale.item_id)
+            if item is None:
+                continue
 
             old_collectibles = item.collectibles.copy()
             await item.fetch_collectibles()
 
             for col in old_collectibles:
                 current = item.get_collectible(col.serial)
-
-                if (
-                    current is None
-                    or any(col.item.id == item.id and col.serial == current.serial
-                           for col in self.sold_items)
-                ):
+                if current is None:
                     continue
-
+                # Check if we already notified this sale
+                if any(sold.item.id == item.id and sold.serial == current.serial for sold in self.sold_items):
+                    continue
                 yield sale, current
 
     async def send_webhook(self, collectible: Collectible, transaction: Transaction) -> None:
-        embed = transaction.make_embed(collectible, self._seller.auth, user_to_ping=self._seller.user_to_ping)
+        # Only send if webhook URL is set
+        if not self._seller.buy_webhook_url:
+            return
 
-        async with self._seller.auth.post(self._seller.buy_webhook_url, json=embed) as response:
+        embed_data = await transaction.make_embed(
+            collectible,
+            self._seller.auth,
+            user_to_ping=self._seller.user_to_ping
+        )
+
+        async with self._seller.auth.post(self._seller.buy_webhook_url, json=embed_data) as response:
             if response.status == 204:
                 self.sold_items.append(collectible)
-
             elif response.status == 429:
                 await asyncio.sleep(30)
                 await self.send_webhook(collectible, transaction)
