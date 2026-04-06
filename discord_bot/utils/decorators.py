@@ -12,15 +12,23 @@ __all__ = ("users_blacklist", "base_command")
 def users_blacklist(user_ids: List[int],
                     ignore_empty: Optional[bool] = True,
                     message: Optional[str] = None) -> Callable:
-
+    """
+    Decorator to restrict command to users not in the blacklist.
+    If ignore_empty is True and the list is empty, no restriction.
+    """
     def decorator(func: Callable):
         @functools.wraps(func)
         async def wrapper(ctx: discord.Message, *args, **kwargs):
-            if ignore_empty and user_ids or ctx.author.id in user_ids:
-                return (not message) or (await ctx.reply(message))
-
+            # If blacklist is empty and ignore_empty is True, allow everyone
+            if ignore_empty and not user_ids:
+                return await func(ctx, *args, **kwargs)
+            # If user is in blacklist, deny
+            if ctx.author.id in user_ids:
+                if message:
+                    await ctx.reply(message)
+                return
+            # Otherwise allow
             await func(ctx, *args, **kwargs)
-
         return wrapper
     return decorator
 
@@ -31,7 +39,6 @@ def base_command(func: Callable):
         await ctx.defer()
         try:
             await func(ctx, *args, **kwargs)
-        except:
+        except Exception:
             await ctx.reply(embed=exception_embed(format_exc()))
-
     return wrapper
