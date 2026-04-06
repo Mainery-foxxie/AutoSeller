@@ -65,10 +65,17 @@ class Auth(ClientSession):
             self.has_premium = await response.json()
             return self.has_premium
 
+    # ========== FIXED: csrf_token_updater with error handling ==========
     async def csrf_token_updater(self, interval: int = 30) -> None:
+        """Continuously refresh CSRF token, handling connection errors gracefully."""
         while True:
-            await self.fetch_csrf_token()
+            try:
+                await self.fetch_csrf_token()
+            except Exception as e:
+                # Log error but don't crash – just wait and retry
+                print(f"[WARN] CSRF token update failed: {e}. Retrying in {interval} seconds...")
             await asyncio.sleep(interval)
+    # ==================================================================
 
     @classmethod
     def has_auth(cls, func: Optional[callable] = None, /, *, attr_name: str = "auth"):
