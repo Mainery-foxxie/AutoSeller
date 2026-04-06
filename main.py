@@ -273,8 +273,6 @@ class AutoSeller(ConfigLoader):
             if price2:
                 prices.append(price2)
                 debug_print(f"marketplace-sales API price: {price2}")
-        else:
-            debug_print("No collectibleItemId available for marketplace-sales API")
 
         price3 = await fetch_price(f"https://catalog.roblox.com/v1/assets/{item_id}/resellers")
         if price3:
@@ -340,7 +338,7 @@ class AutoSeller(ConfigLoader):
         item.price_to_sell = target_price
 
         # Attempt to sell with retry and floor adjustment on 403
-        max_attempts = 3
+        max_attempts = 2
         sold_amount = None
         for attempt in range(max_attempts):
             try:
@@ -354,7 +352,7 @@ class AutoSeller(ConfigLoader):
                     if self.sale_webhook:
                         asyncio.create_task(self.send_sale_webhook(item, sold_amount))
                     break
-                elif sold_amount == 0:
+                else:
                     break
             except Exception as e:
                 error_msg = str(e).lower()
@@ -363,7 +361,7 @@ class AutoSeller(ConfigLoader):
                     debug_print(f"Rate limited! Waiting {wait} seconds...")
                     await asyncio.sleep(wait)
                 elif "403" in error_msg or "forbidden" in error_msg:
-                    # Use the original lowest market price as the new floor, not the undercut price
+                    # Update floor to the market price (lowest_price) not the undercut
                     new_floor = lowest_price if lowest_price else item.price_to_sell
                     debug_print(f"403 Forbidden at price {item.price_to_sell}. Updating floor for {asset_type_name} to {new_floor}")
                     update_floor(asset_type_name, new_floor)
@@ -371,7 +369,7 @@ class AutoSeller(ConfigLoader):
                     debug_print(f"Retrying to sell at floor {new_floor}...")
                     continue
                 elif "412" in error_msg or "precondition failed" in error_msg:
-                    debug_print(f"Item {item.id} returned 412 – not sellable. Skipping.")
+                    debug_print(f"Item {item.id} returned 412 – not sellable. Skipping item.")
                     break
                 else:
                     debug_print(f"Unexpected error: {e}")
