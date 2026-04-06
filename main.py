@@ -237,7 +237,7 @@ class AutoSeller(ConfigLoader):
                 self.not_resable.add(item_id)
                 self.remove_item(item_id)
 
-    # ========== MULTI‑API LOWEST PRICE CHECK ==========
+    # ========== MULTI‑API LOWEST PRICE CHECK (FIXED) ==========
     async def get_lowest_price_multi(self, item_id: int, item_obj: Optional[Item] = None) -> Optional[int]:
         prices = []
 
@@ -259,21 +259,31 @@ class AutoSeller(ConfigLoader):
                 debug_print(f"Request error for {url}: {e}")
             return None
 
+        # Stored price (fallback)
         if item_obj and item_obj.lowest_resale_price and item_obj.lowest_resale_price > 0:
             prices.append(item_obj.lowest_resale_price)
             debug_print(f"Stored lowest_resale_price: {item_obj.lowest_resale_price}")
 
-        price1 = await fetch_price(f"https://economy.roblox.com/v1/assets/{item_id}/resellers")
+        # 1. economy.roblox.com (numeric assetId)
+        url1 = f"https://economy.roblox.com/v1/assets/{item_id}/resellers"
+        price1 = await fetch_price(url1)
         if price1:
             prices.append(price1)
             debug_print(f"economy.roblox.com price: {price1}")
 
-        price2 = await fetch_price(f"https://apis.roblox.com/marketplace-sales/v1/item/{item_id}/resellers?limit=1")
-        if price2:
-            prices.append(price2)
-            debug_print(f"marketplace-sales API price: {price2}")
+        # 2. marketplace-sales API (requires collectibleItemId – UUID)
+        if item_obj and item_obj.item_id:
+            url2 = f"https://apis.roblox.com/marketplace-sales/v1/item/{item_obj.item_id}/resellers?limit=1"
+            price2 = await fetch_price(url2)
+            if price2:
+                prices.append(price2)
+                debug_print(f"marketplace-sales API price: {price2}")
+        else:
+            debug_print("No collectibleItemId available for marketplace-sales API")
 
-        price3 = await fetch_price(f"https://catalog.roblox.com/v1/assets/{item_id}/resellers")
+        # 3. catalog.roblox.com (numeric assetId)
+        url3 = f"https://catalog.roblox.com/v1/assets/{item_id}/resellers"
+        price3 = await fetch_price(url3)
         if price3:
             prices.append(price3)
             debug_print(f"catalog.roblox.com price: {price3}")
@@ -285,7 +295,6 @@ class AutoSeller(ConfigLoader):
         return None
     # ==================================================
 
-    # ========== FIXED SELL WITH FLOOR PROTECTION ==========
     async def sell_item(self):
         item = self.current
         debug_print(f"Selling item: {item.name} (ID {item.id})")
@@ -293,17 +302,14 @@ class AutoSeller(ConfigLoader):
             f"Selling [g{len(item.collectibles)}x] of [g{item.name}] items...",
             "selling", Color(255, 153, 0))
 
-        # Get asset type name (stored during item creation)
         asset_type_name = getattr(item, 'asset_type_name', 'Unknown')
         debug_print(f"Asset type: {asset_type_name}")
 
-        # Get the floor for this asset type
         floor = get_floor(asset_type_name)
         if floor is None:
             floor = 5
             debug_print(f"No floor found for {asset_type_name}, using default 5")
 
-        # Get current lowest price
         lowest_price = await self.get_lowest_price_multi(item.id, item)
 
         if lowest_price and lowest_price > 0:
@@ -336,9 +342,7 @@ class AutoSeller(ConfigLoader):
 
             debug_print(f"Competition found (lowest={lowest_price}), undercut applied → {target_price}")
         else:
-            # No competition – use configurable default
             target_price = self.default_price_no_competition
-            # But also respect floor: if default is below floor, use floor
             if floor and target_price < floor:
                 debug_print(f"Default price {target_price} below floor {floor}, raising to floor.")
                 target_price = floor
@@ -346,22 +350,25 @@ class AutoSeller(ConfigLoader):
 
         item.price_to_sell = target_price
 
-        # Attempt to sell
-        max_retries = 3
+        # Attempt to sell (with one retry if sold_amount == 0)
+        max_attempts = 2
         sold_amount = None
-        for attempt in range(max_retries):
+        for attempt in range(max_attempts):
             try:
                 sold_amount = await item.sell_collectibles(
                     skip_on_sale=self.skip_on_sale,
                     skip_if_cheapest=self.skip_if_cheapest,
                     verbose=True
                 )
-                if sold_amount is not None:
-                    if sold_amount > 0:
-                        self.total_sold += sold_amount
-                        if self.sale_webhook:
-                            asyncio.create_task(self.send_sale_webhook(item, sold_amount))
+                if sold_amount is not None and sold_amount > 0:
+                    self.total_sold += sold_amount
+                    if self.sale_webhook:
+                        asyncio.create_task(self.send_sale_webhook(item, sold_amount))
                     break
+                elif attempt == 0 and sold_amount == 0:
+                    debug_print("First sell attempt sold nothing – forcing collectibles refresh and retrying...")
+                    await item.fetch_collectibles()
+                    continue
                 else:
                     break
             except Exception as e:
@@ -384,7 +391,6 @@ class AutoSeller(ConfigLoader):
         if self.save_progress and item.id in self._items:
             self.seen.add(item.id)
         self.next_item()
-    # =========================================================
 
     def fetch_item_info(self, *, step_index: int = 1) -> Optional[Iterable[Task]]:
         try:
@@ -531,13 +537,12 @@ class AutoSeller(ConfigLoader):
                 else:
                     sell_price = self.default_price_no_competition
 
-                # Create Item with asset_type_name parameter
                 item_obj = Item(
                     item, item_details,
                     price_to_sell=sell_price,
                     thumbnail=thumbnail,
                     auth=self.auth,
-                    asset_type_name=asset_type_name   # <-- pass it here
+                    asset_type_name=asset_type_name
                 )
                 self.add_item(item_obj)
             item_obj.add_collectible(serial=item["serialNumber"], item_id=item["collectibleItemId"], instance_id=item["collectibleItemInstanceId"])
