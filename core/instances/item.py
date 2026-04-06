@@ -17,7 +17,7 @@ class Item:
                  "_creator_id", "creator_name", "_creator_link",
                  "recent_average_price", "has_resales", "latest_sale",
                  "has_sales", "price_to_sell", "auth", "_collectibles",
-                 "resales", "sales", "asset_type_name")   # <-- added asset_type_name
+                 "resales", "sales", "asset_type_name")
 
     def __init__(
         self,
@@ -27,7 +27,7 @@ class Item:
         thumbnail: Optional[str] = None,
         price_to_sell: Optional[int] = None,
         auth: Optional[Auth] = None,
-        asset_type_name: Optional[str] = None   # <-- new parameter
+        asset_type_name: Optional[str] = None
     ) -> None:
         self._id = item_info["assetId"]
         self.item_id = item_info["collectibleItemId"]
@@ -53,7 +53,7 @@ class Item:
         self._collectibles = {}
         self.resales = []
         self.sales = []
-        self.asset_type_name = asset_type_name   # <-- store it
+        self.asset_type_name = asset_type_name
 
     id = IgnoreNew()
     link = IgnoreNew()
@@ -129,7 +129,6 @@ class Item:
                 product_id=product_id
             )
 
-    # ==================== UPDATED SELL_COLLECTIBLES METHOD ====================
     @Auth.has_auth
     async def sell_collectibles(
         self,
@@ -153,7 +152,6 @@ class Item:
         for col in self.collectibles:
             tries = 0
 
-            # Debug output for each collectible
             if verbose:
                 print(f"[DEBUG] Collectible #{col.serial}: on_sale={col.on_sale}, "
                       f"sale_price={col.sale_price}, item_id={col.item_id}, "
@@ -180,7 +178,6 @@ class Item:
                         Display.skipping(f"#{col.serial} is already cheapest")
                     continue
 
-            # Check for missing required IDs
             if None in (col.item_id, col.instance_id, col.product_id):
                 if verbose:
                     Display.error(f"Collectible #{col.serial} missing required IDs (item_id={col.item_id}, "
@@ -226,7 +223,6 @@ class Item:
                     break
 
         return sold_amount
-    # =========================================================================
 
     @Auth.has_auth
     async def fetch_sales(self, *,
