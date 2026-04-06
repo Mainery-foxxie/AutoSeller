@@ -90,6 +90,10 @@ def get_floor(asset_type_name: str) -> Optional[int]:
 
 # ==================== AUTOMATIC FLOOR DETECTION ====================
 async def get_current_cap(auth):
+    """
+    Fetch price floor for each asset type using official API.
+    Falls back to existing price_floors.json values if API fails.
+    """
     from core.constants import ITEM_TYPES
     caps = {}
     for asset_type_name, asset_type_id in ITEM_TYPES.items():
@@ -106,42 +110,12 @@ async def get_current_cap(auth):
                         continue
         except:
             pass
-        caps[asset_type_name] = None
-
-    debug_print("Fetching your own on-sale items to infer floors...")
-    try:
-        user_id = auth.user_id
-        url = f"https://economy.roblox.com/v1/users/{user_id}/resellable-items?limit=100"
-        async with auth.get(url) as resp:
-            if resp.status == 200:
-                data = await resp.json()
-                for item in data.get("data", []):
-                    asset_type_id = item.get("assetType")
-                    price = item.get("price", 0)
-                    if price <= 0:
-                        continue
-                    for name, type_id in ITEM_TYPES.items():
-                        if type_id == asset_type_id:
-                            if caps.get(name) is None or caps[name]["priceFloor"] > price:
-                                caps[name] = {"priceFloor": price}
-                            break
-    except Exception as e:
-        debug_print(f"Failed to scan your own items: {e}")
-
-    default_floors = {
-        "Emote": 50, "Hat": 90, "HairAccessory": 60, "FaceAccessory": 90,
-        "NeckAccessory": 50, "ShoulderAccessory": 50, "FrontAccessory": 50,
-        "BackAccessory": 135, "WaistAccessory": 60, "TShirtAccessory": 61,
-        "ShirtAccessory": 55, "PantsAccessory": 65, "JacketAccessory": 60,
-        "SweaterAccessory": 61, "ShortsAccessory": 55, "DressSkirtAccessory": 55,
-    }
-    for asset_type_name in ITEM_TYPES.values():
-        if caps.get(asset_type_name) is None:
-            floor = default_floors.get(asset_type_name, 5)
-            caps[asset_type_name] = {"priceFloor": floor}
-            debug_print(f"Using default floor for {asset_type_name}: {floor}")
-
-    debug_print(f"Final price floors: {caps}")
+        # If API fails, try to read from existing floor file
+        floor = get_floor(asset_type_name)
+        if floor is None:
+            floor = 5  # absolute minimum
+        caps[asset_type_name] = {"priceFloor": floor}
+        debug_print(f"Using saved/default floor for {asset_type_name}: {floor}")
     return caps
 
 import core.main_tools
@@ -237,9 +211,8 @@ class AutoSeller(ConfigLoader):
                 self.not_resable.add(item_id)
                 self.remove_item(item_id)
 
-    # ========== MULTI‑API LOWEST PRICE CHECK (with fallback chain) ==========
+    # ========== MULTI‑API LOWEST PRICE CHECK ==========
     async def get_lowest_price_multi(self, item_id: int, item_obj: Optional[Item] = None) -> Optional[int]:
-        """Try multiple endpoints in order; return first successful price."""
         prices = []
 
         async def fetch_price(url, expected_key="data"):
@@ -297,7 +270,7 @@ class AutoSeller(ConfigLoader):
         return None
     # ==================================================
 
-    # ========== SELL_ITEM WITH FLOOR UPDATE ON 403 ==========
+    # ========== SELL_ITEM WITH RELIST LOGIC ==========
     async def sell_item(self):
         item = self.current
         debug_print(f"Selling item: {item.name} (ID {item.id})")
@@ -313,7 +286,17 @@ class AutoSeller(ConfigLoader):
             floor = 5
             debug_print(f"No floor found for {asset_type_name}, using default 5")
 
+        # Get current market price
         lowest_price = await self.get_lowest_price_multi(item.id, item)
+
+        # If our current price is higher than the market, update it (relist)
+        if lowest_price and lowest_price > 0 and item.price_to_sell > lowest_price:
+            debug_print(f"Current price {item.price_to_sell} > market {lowest_price}. Relisting at market price.")
+            item.price_to_sell = lowest_price
+
+        # Re-fetch lowest price after potential update (or use existing)
+        if lowest_price is None:
+            lowest_price = await self.get_lowest_price_multi(item.id, item)
 
         if lowest_price and lowest_price > 0:
             if lowest_price < floor:
@@ -348,6 +331,7 @@ class AutoSeller(ConfigLoader):
 
         item.price_to_sell = target_price
 
+        # Attempt to sell with retry and floor adjustment on 403
         max_attempts = 2
         sold_amount = None
         for attempt in range(max_attempts):
@@ -437,7 +421,6 @@ class AutoSeller(ConfigLoader):
         except:
             return Display.exception(f"Unknown error occurred:\n\n{format_exc()}")
 
-    # ========== FIXED start_selling (handles None from fetch_item_info) ==========
     async def start_selling(self):
         for i in range(2):
             tasks = self.fetch_item_info(step_index=i)
@@ -456,7 +439,6 @@ class AutoSeller(ConfigLoader):
             self.seen.clear()
             Display.success("Cleared your limiteds selling progress")
             Tools.exit_program()
-    # =============================================================================
 
     async def _auto_sell_items(self):
         while not self.done:
