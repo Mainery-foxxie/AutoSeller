@@ -178,6 +178,7 @@ class Item:
                         Display.skipping(f"#{col.serial} is already cheapest")
                     continue
 
+            # Check for missing required IDs
             if None in (col.item_id, col.instance_id, col.product_id):
                 if verbose:
                     Display.error(f"Collectible #{col.serial} missing required IDs (item_id={col.item_id}, "
@@ -206,11 +207,9 @@ class Item:
                         tries += 1
                         await asyncio.sleep(30)
                     case 403:
-                        if response.reason == "Forbidden":
-                            if verbose:
-                                Display.error("Forbidden – cookie may be invalid or missing permissions")
-                            break
-                        tries += 1
+                        if verbose:
+                            Display.error(f"Forbidden – price {price_to_sell} may be below minimum")
+                        raise Exception(f"403 Forbidden - price {price_to_sell} too low")
                     case _:
                         if verbose:
                             Display.error(f"Failed to sell #{col.serial} (status {response.status}): {response.reason}")
