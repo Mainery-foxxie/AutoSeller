@@ -18,7 +18,7 @@ async def get_recent_sales(auth: Auth, *,
 
 async def get_users_thumbnails(user_ids: Iterable[str], auth: Auth) -> Optional[List[str]]:
     thumbnails = []
-    for chunk in slice_list(user_ids, 100):
+    for chunk in slice_list(list(user_ids), 100):
         processed_chunk = ','.join(chunk)
         async with auth.get(
             "thumbnails.roblox.com/v1/users/avatar-headshot?"
@@ -36,7 +36,7 @@ async def get_users_thumbnails(user_ids: Iterable[str], auth: Auth) -> Optional[
 
 async def get_assets_thumbnails(asset_ids: Iterable[str], auth: Auth) -> Optional[List[str]]:
     thumbnails = []
-    for chunk in slice_list(asset_ids, 100):
+    for chunk in slice_list(list(asset_ids), 100):
         async with auth.get(
             "thumbnails.roblox.com/v1/assets?"
             f"assetIds={','.join(chunk)}&returnPolicy=PlaceHolder&size=50x50&format=Png&isCircular=false"
@@ -64,85 +64,55 @@ async def get_items_details(item_ids: List[int], auth: Auth) -> List[dict]:
                 return items
             items_with_ids = {str(details["id"]): details for details in data}
             for item_id in item_ids:
-                if item_id in items_with_ids:
-                    items.append(items_with_ids[item_id])
+                if str(item_id) in items_with_ids:
+                    items.append(items_with_ids[str(item_id)])
     return items
 
 
 async def get_user_inventory(item_type: int, auth: Auth) -> List[dict]:
+    """
+    Fetch all resellable items of a given asset type.
+    Returns list of items that have a serialNumber (i.e., limited/resellable).
+    """
     assets = []
     cursor = ""
     while True:
-        async with auth.get(
-            f"inventory.roblox.com/v2/users/{auth.user_id}/inventory/{item_type}?"
-            f"limit=100&cursor={cursor}&sortOrder=Desc"
-        ) as response:
+        url = f"inventory.roblox.com/v2/users/{auth.user_id}/inventory/{item_type}?limit=100&cursor={cursor}&sortOrder=Desc"
+        async with auth.get(url) as response:
             if response.status != 200:
-                return assets
+                break
             data = await response.json()
             cursor = data.get("nextPageCursor")
-            assets.extend([asset for asset in data.get("data") if asset.get("serialNumber")])
+            # Only keep items that have a serialNumber (limited/resellable)
+            for asset in data.get("data", []):
+                if asset.get("serialNumber") is not None:
+                    assets.append(asset)
             if not cursor:
-                return assets
+                break
+    return assets
 
 
-# ==================== FIXED get_current_cap WITH MULTI‑API FALLBACK ====================
 async def get_current_cap(auth: Auth) -> Optional[dict]:
     """
-    Fetch price floor for each asset type using multiple endpoints.
-    Returns dict: {asset_type_name: {"priceFloor": int}}
-    Uses fallback chain to ensure a value is always returned.
+    Fetch price floor for each asset type using official API.
+    Fallback to existing price_floors.json values if API fails.
     """
     from core.constants import ITEM_TYPES
-
     caps = {}
-
-    # Define fallback endpoints for each asset type (per‑type API is most reliable)
     for asset_type_name, asset_type_id in ITEM_TYPES.items():
-        floor = None
-
-        # 1. Official price-floor endpoint
         url = f"https://economy.roblox.com/v1/assets/price-floor?assetTypeId={asset_type_id}"
         try:
             async with auth.get(url) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     if isinstance(data, (int, float)) and data > 0:
-                        floor = int(data)
+                        caps[asset_type_name] = {"priceFloor": int(data)}
+                        continue
                     elif isinstance(data, dict) and data.get("priceFloor", 0) > 0:
-                        floor = data["priceFloor"]
+                        caps[asset_type_name] = {"priceFloor": data["priceFloor"]}
+                        continue
         except:
             pass
-
-        # 2. If failed, try to infer from your own on‑sale items (already implemented in main.py, but we'll repeat)
-        if floor is None:
-            try:
-                user_id = auth.user_id
-                url2 = f"https://economy.roblox.com/v1/users/{user_id}/resellable-items?limit=100"
-                async with auth.get(url2) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        for item in data.get("data", []):
-                            if item.get("assetType") == asset_type_id:
-                                price = item.get("price", 0)
-                                if price > 0:
-                                    floor = price
-                                    break
-            except:
-                pass
-
-        # 3. Fallback to default floors from your provided data
-        if floor is None:
-            default_floors = {
-                "Emote": 50, "Hat": 90, "HairAccessory": 60, "FaceAccessory": 90,
-                "NeckAccessory": 50, "ShoulderAccessory": 50, "FrontAccessory": 50,
-                "BackAccessory": 135, "WaistAccessory": 60, "TShirtAccessory": 61,
-                "ShirtAccessory": 55, "PantsAccessory": 65, "JacketAccessory": 60,
-                "SweaterAccessory": 61, "ShortsAccessory": 55, "DressSkirtAccessory": 55,
-            }
-            floor = default_floors.get(asset_type_name, 5)
-
-        caps[asset_type_name] = {"priceFloor": floor}
-
+        # Fallback to 5 if no floor found
+        caps[asset_type_name] = {"priceFloor": 5}
     return caps
-# =======================================================================================
