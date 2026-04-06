@@ -264,7 +264,7 @@ class AutoSeller(ConfigLoader):
         return None
     # ==================================================
 
-    # ========== SELL_ITEM WITH RELIST LOGIC ==========
+    # ========== SELL_ITEM WITH PROPER 403/412 HANDLING ==========
     async def sell_item(self):
         item = self.current
         debug_print(f"Selling item: {item.name} (ID {item.id})")
@@ -280,14 +280,12 @@ class AutoSeller(ConfigLoader):
             floor = 5
             debug_print(f"No floor found for {asset_type_name}, using default 5")
 
-        # Get current market price
         lowest_price = await self.get_lowest_price_multi(item.id, item)
 
         # Relist if our price is higher than market
         if lowest_price and lowest_price > 0 and item.price_to_sell > lowest_price:
             debug_print(f"Current price {item.price_to_sell} > market {lowest_price}. Relisting at market price.")
             item.price_to_sell = lowest_price
-            # Re-fetch after update
             lowest_price = await self.get_lowest_price_multi(item.id, item)
 
         if lowest_price and lowest_price > 0:
@@ -346,12 +344,8 @@ class AutoSeller(ConfigLoader):
                     debug_print(f"Rate limited! Waiting {wait} seconds...")
                     await asyncio.sleep(wait)
                 elif "403" in error_msg or "forbidden" in error_msg:
-                    new_floor = lowest_price if lowest_price else item.price_to_sell
-                    debug_print(f"403 Forbidden at price {item.price_to_sell}. Updating floor for {asset_type_name} to {new_floor}")
-                    update_floor(asset_type_name, new_floor)
-                    item.price_to_sell = new_floor
-                    debug_print(f"Retrying to sell at floor {new_floor}...")
-                    continue
+                    debug_print(f"403 Forbidden – item {item.id} is not resellable. Skipping.")
+                    break
                 elif "412" in error_msg or "precondition failed" in error_msg:
                     debug_print(f"Item {item.id} returned 412 – not sellable. Skipping item.")
                     break
