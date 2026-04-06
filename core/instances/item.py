@@ -210,6 +210,11 @@ class Item:
                         if verbose:
                             Display.error(f"Forbidden – price {price_to_sell} may be below minimum")
                         raise Exception(f"403 Forbidden - price {price_to_sell} too low")
+                    case 412:
+                        if verbose:
+                            Display.error(f"Precondition Failed (412) – cannot sell #{col.serial}. Skipping permanently.")
+                        col.skip_on_sale = True
+                        break
                     case _:
                         if verbose:
                             Display.error(f"Failed to sell #{col.serial} (status {response.status}): {response.reason}")
