@@ -237,11 +237,12 @@ class AutoSeller(ConfigLoader):
                 self.not_resable.add(item_id)
                 self.remove_item(item_id)
 
-    # ========== MULTI‑API LOWEST PRICE CHECK ==========
+    # ========== MULTI‑API LOWEST PRICE CHECK (with fallback chain) ==========
     async def get_lowest_price_multi(self, item_id: int, item_obj: Optional[Item] = None) -> Optional[int]:
+        """Try multiple endpoints in order; return first successful price."""
         prices = []
 
-        async def fetch_price(url):
+        async def fetch_price(url, expected_key="data"):
             headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
                 "Accept": "application/json",
@@ -251,33 +252,50 @@ class AutoSeller(ConfigLoader):
                 async with self.auth.get(url, headers=headers) as resp:
                     if resp.status == 200:
                         data = await resp.json()
-                        if data.get("data") and len(data["data"]) > 0:
+                        if expected_key == "data" and data.get("data") and len(data["data"]) > 0:
                             return data["data"][0].get("price", 0)
+                        elif expected_key == "priceDataPoints" and data.get("priceDataPoints"):
+                            # For resale-data endpoint, get the minimum sale price
+                            min_price = min(p["value"] for p in data["priceDataPoints"])
+                            return min_price
+                        else:
+                            # Fallback: try to get price directly
+                            return data.get("price", 0)
                     else:
                         debug_print(f"API {url} returned {resp.status}")
             except Exception as e:
                 debug_print(f"Request error for {url}: {e}")
             return None
 
+        # 1. Stored price from inventory (fallback)
         if item_obj and item_obj.lowest_resale_price and item_obj.lowest_resale_price > 0:
             prices.append(item_obj.lowest_resale_price)
             debug_print(f"Stored lowest_resale_price: {item_obj.lowest_resale_price}")
 
+        # 2. economy.roblox.com/v1/assets/{id}/resellers
         price1 = await fetch_price(f"https://economy.roblox.com/v1/assets/{item_id}/resellers")
         if price1:
             prices.append(price1)
             debug_print(f"economy.roblox.com price: {price1}")
 
+        # 3. marketplace-sales API (needs UUID)
         if item_obj and item_obj.item_id:
             price2 = await fetch_price(f"https://apis.roblox.com/marketplace-sales/v1/item/{item_obj.item_id}/resellers?limit=1")
             if price2:
                 prices.append(price2)
                 debug_print(f"marketplace-sales API price: {price2}")
 
+        # 4. catalog.roblox.com
         price3 = await fetch_price(f"https://catalog.roblox.com/v1/assets/{item_id}/resellers")
         if price3:
             prices.append(price3)
             debug_print(f"catalog.roblox.com price: {price3}")
+
+        # 5. resale-data endpoint (actual sale history)
+        price4 = await fetch_price(f"https://economy.roblox.com/v1/assets/{item_id}/resale-data", expected_key="priceDataPoints")
+        if price4:
+            prices.append(price4)
+            debug_print(f"resale-data min sale price: {price4}")
 
         if prices:
             lowest = min(prices)
@@ -302,6 +320,7 @@ class AutoSeller(ConfigLoader):
             floor = 5
             debug_print(f"No floor found for {asset_type_name}, using default 5")
 
+        # Get the best available lowest price from all APIs
         lowest_price = await self.get_lowest_price_multi(item.id, item)
 
         if lowest_price and lowest_price > 0:
