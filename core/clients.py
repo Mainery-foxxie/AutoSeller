@@ -4,6 +4,7 @@ import inspect
 import re
 
 from typing import Optional
+from aiohttp import ClientTimeout
 
 from .visuals import Display
 
@@ -11,10 +12,11 @@ __all__ = ("ClientSession", "Auth")
 
 
 class ClientSession(aiohttp.ClientSession):
-    def __init__(self, base_url: Optional[str] = None, **kwargs):
+    def __init__(self, base_url: Optional[str] = None, timeout: int = 30, **kwargs):
         kwargs.update({
             "connector": aiohttp.TCPConnector(limit=None, ssl=False),
             "trust_env": True,
+            "timeout": ClientTimeout(total=timeout)
         })
         super().__init__(base_url, **kwargs)
 
@@ -65,17 +67,13 @@ class Auth(ClientSession):
             self.has_premium = await response.json()
             return self.has_premium
 
-    # ========== FIXED: csrf_token_updater with error handling ==========
     async def csrf_token_updater(self, interval: int = 30) -> None:
-        """Continuously refresh CSRF token, handling connection errors gracefully."""
         while True:
             try:
                 await self.fetch_csrf_token()
             except Exception as e:
-                # Log error but don't crash – just wait and retry
-                print(f"[WARN] CSRF token update failed: {e}. Retrying in {interval} seconds...")
+                print(f"[WARN] CSRF token update failed: {e}. Retrying in {interval}s...")
             await asyncio.sleep(interval)
-    # ==================================================================
 
     @classmethod
     def has_auth(cls, func: Optional[callable] = None, /, *, attr_name: str = "auth"):
