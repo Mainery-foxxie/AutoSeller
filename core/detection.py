@@ -63,17 +63,13 @@ async def get_items_details(item_ids: List[int], auth: Auth) -> List[dict]:
             if data is None:
                 return items
             items_with_ids = {str(details["id"]): details for details in data}
-            for item_id in item_ids:
+            for item_id in chunk:
                 if str(item_id) in items_with_ids:
                     items.append(items_with_ids[str(item_id)])
     return items
 
 
 async def get_user_inventory(item_type: int, auth: Auth) -> List[dict]:
-    """
-    Fetch all resellable items of a given asset type.
-    Returns list of items that have a serialNumber (i.e., limited/resellable).
-    """
     assets = []
     cursor = ""
     while True:
@@ -83,7 +79,6 @@ async def get_user_inventory(item_type: int, auth: Auth) -> List[dict]:
                 break
             data = await response.json()
             cursor = data.get("nextPageCursor")
-            # Only keep items that have a serialNumber (limited/resellable)
             for asset in data.get("data", []):
                 if asset.get("serialNumber") is not None:
                     assets.append(asset)
@@ -93,10 +88,6 @@ async def get_user_inventory(item_type: int, auth: Auth) -> List[dict]:
 
 
 async def get_current_cap(auth: Auth) -> Optional[dict]:
-    """
-    Fetch price floor for each asset type using official API.
-    Fallback to existing price_floors.json values if API fails.
-    """
     from core.constants import ITEM_TYPES
     caps = {}
     for asset_type_name, asset_type_id in ITEM_TYPES.items():
@@ -113,6 +104,5 @@ async def get_current_cap(auth: Auth) -> Optional[dict]:
                         continue
         except:
             pass
-        # Fallback to 5 if no floor found
         caps[asset_type_name] = {"priceFloor": 5}
     return caps
