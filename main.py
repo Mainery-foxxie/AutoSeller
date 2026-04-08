@@ -106,10 +106,12 @@ async def get_current_cap(auth):
                         continue
         except:
             pass
-        # Fallback: read from existing floor file or use 5
+        # If API fails, try to read from existing floor file
         floor = get_floor(asset_type_name)
-        caps[asset_type_name] = {"priceFloor": floor if floor is not None else 5}
-        debug_print(f"Using saved/default floor for {asset_type_name}: {caps[asset_type_name]['priceFloor']}")
+        if floor is None:
+            floor = 5
+        caps[asset_type_name] = {"priceFloor": floor}
+        debug_print(f"Using saved/default floor for {asset_type_name}: {floor}")
     return caps
 
 import core.main_tools
@@ -216,7 +218,7 @@ class AutoSeller(ConfigLoader):
                 "Referer": "https://www.roblox.com/",
             }
             try:
-                async with self.auth.get(url, headers=headers) as resp:
+                async with self.auth.get(url, headers=headers, timeout=15) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         if expected_key == "data" and data.get("data") and len(data["data"]) > 0:
@@ -228,8 +230,8 @@ class AutoSeller(ConfigLoader):
                             return data.get("price", 0)
                     else:
                         debug_print(f"API {url} returned {resp.status}")
-            except Exception as e:
-                debug_print(f"Request error for {url}: {e}")
+            except (asyncio.TimeoutError, aiohttp.ClientError) as e:
+                debug_print(f"Timeout/error for {url}: {e}")
             return None
 
         if item_obj and item_obj.lowest_resale_price and item_obj.lowest_resale_price > 0:
@@ -283,11 +285,13 @@ class AutoSeller(ConfigLoader):
         # Get current market price
         lowest_price = await self.get_lowest_price_multi(item.id, item)
 
-        # Relist if our price is higher than market
+        # If our current price is higher than the market, update it (relist)
         if lowest_price and lowest_price > 0 and item.price_to_sell > lowest_price:
             debug_print(f"Current price {item.price_to_sell} > market {lowest_price}. Relisting at market price.")
             item.price_to_sell = lowest_price
-            # Re-fetch after update
+
+        # Re-fetch lowest price after potential update (or use existing)
+        if lowest_price is None:
             lowest_price = await self.get_lowest_price_multi(item.id, item)
 
         if lowest_price and lowest_price > 0:
@@ -323,6 +327,7 @@ class AutoSeller(ConfigLoader):
 
         item.price_to_sell = target_price
 
+        # Attempt to sell with retry and floor adjustment on 403
         max_attempts = 2
         sold_amount = None
         for attempt in range(max_attempts):
@@ -472,15 +477,14 @@ class AutoSeller(ConfigLoader):
 
     async def __fetch_items(self) -> AsyncGenerator:
         Display.info("Loading your inventory")
+        # Fetch all asset types from ITEM_TYPES
         all_user_items = []
         for asset_type_id in ITEM_TYPES.keys():
             items = await AssetsLoader(get_user_inventory, [asset_type_id]).load(self.auth)
             all_user_items.extend(items)
         debug_print(f"Total items with serials found: {len(all_user_items)}")
-
         if not all_user_items:
-            Display.exception("You don't have any limited UGC items")
-
+            Display.exception("You dont have any limited UGC items")
         item_ids = [str(asset["assetId"]) for asset in all_user_items]
 
         Display.info("Loading items thumbnails")
@@ -489,6 +493,7 @@ class AutoSeller(ConfigLoader):
         Display.info(f"Found {len(all_user_items)} items. Checking them...")
         items_details = await AssetsLoader(get_items_details, item_ids, 120).load(self.auth)
 
+        # Build dict for quick lookup
         details_by_id = {str(d["id"]): d for d in items_details}
 
         for item_info, thumbnail in zip(all_user_items, items_thumbnails):
@@ -505,20 +510,16 @@ class AutoSeller(ConfigLoader):
         items_cap = await get_current_cap(self.auth)
         if not items_cap:
             items_cap = {t: {"priceFloor": 5} for t in ITEM_TYPES.values()}
-
         ignored_items = list(self.seen | self.blacklist | self.not_resable)
-
-        async for item_info, item_details, thumbnail in self.__fetch_items():
-            item_id = item_info["assetId"]
+        async for item, item_details, thumbnail in self.__fetch_items():
+            item_id = item["assetId"]
             if item_id in ignored_items or item_details["creatorTargetId"] in self.creators_blacklist:
                 debug_print(f"Skipping {item_id} (ignored or blacklisted creator)")
                 continue
-
             asset_type_name = ITEM_TYPES.get(item_details["assetType"], "Unknown")
             if asset_type_name == "Unknown":
                 debug_print(f"Unknown asset type {item_details['assetType']} for item {item_id}, skipping")
                 continue
-
             item_obj = self.get_item(item_id)
             if item_obj is None:
                 asset_cap = items_cap.get(asset_type_name, {}).get("priceFloor", 5)
@@ -533,9 +534,8 @@ class AutoSeller(ConfigLoader):
                         sell_price = asset_cap
                 else:
                     sell_price = self.default_price_no_competition
-
                 item_obj = Item(
-                    item_info, item_details,
+                    item, item_details,
                     price_to_sell=sell_price,
                     thumbnail=thumbnail,
                     auth=self.auth,
@@ -543,21 +543,18 @@ class AutoSeller(ConfigLoader):
                 )
                 self.add_item(item_obj)
             item_obj.add_collectible(
-                serial=item_info["serialNumber"],
-                item_id=item_info["collectibleItemId"],
-                instance_id=item_info["collectibleItemInstanceId"]
+                serial=item["serialNumber"],
+                item_id=item["collectibleItemId"],
+                instance_id=item["collectibleItemInstanceId"]
             )
-
         debug_print(f"Loaded {len(self.items)} items after initial filter")
-
         if not self.items:
-            Display.error("You don't have any limiteds that are not in blacklist")
+            Display.error("You dont have any limiteds that are not in blacklist")
             clear_items = await Display.input("Do you want to reset your selling progress? (Y/n): ")
             if clear_items.lower() == "y":
                 self.seen.clear()
                 Display.success("Cleared your limiteds selling progress")
                 Tools.exit_program()
-
         if self.keep_serials or self.keep_copy:
             for item in self.items:
                 if len(item.collectibles) <= self.keep_copy:
@@ -566,13 +563,11 @@ class AutoSeller(ConfigLoader):
                 for col in item.collectibles:
                     if col.serial > self.keep_serials:
                         col.skip_on_sale = True
-
         if not self.items:
             not_met = []
             if self.keep_copy: not_met.append(f"{self.keep_copy} copies or higher")
             if self.keep_serials: not_met.append(f"{self.keep_serials} serial or higher")
-            return Display.exception(f"You don't have any limiteds with {', '.join(not_met)}")
-
+            return Display.exception(f"You dont have any limiteds with {', '.join(not_met)}")
         self.loaded_time = datetime.now()
         debug_print(f"Items loaded at {self.loaded_time}. Ready to sell.")
 
