@@ -106,7 +106,6 @@ async def get_current_cap(auth):
                         continue
         except:
             pass
-        # If API fails, try to read from existing floor file
         floor = get_floor(asset_type_name)
         if floor is None:
             floor = 5
@@ -266,7 +265,7 @@ class AutoSeller(ConfigLoader):
         return None
     # ==================================================
 
-    # ========== SELL_ITEM WITH RELIST LOGIC ==========
+    # ========== IMPROVED SELL_ITEM WITH RELIST LOGIC ==========
     async def sell_item(self):
         item = self.current
         debug_print(f"Selling item: {item.name} (ID {item.id})")
@@ -282,52 +281,44 @@ class AutoSeller(ConfigLoader):
             floor = 5
             debug_print(f"No floor found for {asset_type_name}, using default 5")
 
-        # Get current market price
-        lowest_price = await self.get_lowest_price_multi(item.id, item)
+        market_price = await self.get_lowest_price_multi(item.id, item)
 
-        # If our current price is higher than the market, update it (relist)
-        if lowest_price and lowest_price > 0 and item.price_to_sell > lowest_price:
-            debug_print(f"Current price {item.price_to_sell} > market {lowest_price}. Relisting at market price.")
-            item.price_to_sell = lowest_price
+        # Relist if our price is higher than market
+        if market_price and market_price > 0:
+            if market_price < item.price_to_sell:
+                debug_print(f"Market price {market_price} is lower than our price {item.price_to_sell}. Relisting.")
+                new_price = market_price - 1
+                if new_price < floor:
+                    new_price = floor
+                if new_price < 5:
+                    new_price = 5
+                item.price_to_sell = new_price
+                debug_print(f"New price set to {item.price_to_sell}")
+                await asyncio.sleep(1)
+                market_price = await self.get_lowest_price_multi(item.id, item)
 
-        # Re-fetch lowest price after potential update (or use existing)
-        if lowest_price is None:
-            lowest_price = await self.get_lowest_price_multi(item.id, item)
+        if market_price and market_price > 0:
+            if market_price < floor:
+                floor = update_floor(asset_type_name, market_price)
 
-        if lowest_price and lowest_price > 0:
-            if lowest_price < floor:
-                floor = update_floor(asset_type_name, lowest_price)
-                debug_print(f"Updated floor to {floor} based on live price")
-
-            if lowest_price == floor:
-                target_price = floor
-                debug_print(f"Lowest price equals floor ({floor}). Selling at floor.")
+            if item.price_to_sell <= market_price:
+                target_price = item.price_to_sell
+                debug_print(f"Our price {target_price} is competitive.")
             else:
-                if self.under_cut_type == "percent":
-                    undercut_amount = int(lowest_price * (self.under_cut_amount / 100))
-                    target_price = lowest_price - undercut_amount
-                else:
-                    target_price = lowest_price - self.under_cut_amount
-
-                if target_price >= lowest_price:
-                    target_price = lowest_price - 1
+                target_price = market_price - 1
                 if target_price < floor:
-                    debug_print(f"Undercut would go below floor {floor}, selling at floor instead.")
                     target_price = floor
-
-            if target_price < 5:
-                target_price = 5
-            debug_print(f"Target price: {target_price}")
+                if target_price < 5:
+                    target_price = 5
+                item.price_to_sell = target_price
+                debug_print(f"Adjusting price to {target_price}")
         else:
             target_price = self.default_price_no_competition
             if floor and target_price < floor:
-                debug_print(f"Default price {target_price} below floor {floor}, raising to floor.")
                 target_price = floor
+            item.price_to_sell = target_price
             debug_print(f"No competition, using default price: {target_price}")
 
-        item.price_to_sell = target_price
-
-        # Attempt to sell with retry and floor adjustment on 403
         max_attempts = 2
         sold_amount = None
         for attempt in range(max_attempts):
@@ -351,14 +342,13 @@ class AutoSeller(ConfigLoader):
                     debug_print(f"Rate limited! Waiting {wait} seconds...")
                     await asyncio.sleep(wait)
                 elif "403" in error_msg or "forbidden" in error_msg:
-                    new_floor = lowest_price if lowest_price else item.price_to_sell
-                    debug_print(f"403 Forbidden at price {item.price_to_sell}. Updating floor for {asset_type_name} to {new_floor}")
+                    new_floor = market_price if market_price else item.price_to_sell
+                    debug_print(f"403 Forbidden – updating floor for {asset_type_name} to {new_floor}")
                     update_floor(asset_type_name, new_floor)
                     item.price_to_sell = new_floor
-                    debug_print(f"Retrying to sell at floor {new_floor}...")
                     continue
                 elif "412" in error_msg or "precondition failed" in error_msg:
-                    debug_print(f"Item {item.id} returned 412 – not sellable. Skipping item.")
+                    debug_print(f"Item {item.id} returned 412 – not sellable. Skipping.")
                     break
                 else:
                     debug_print(f"Unexpected error: {e}")
@@ -477,7 +467,6 @@ class AutoSeller(ConfigLoader):
 
     async def __fetch_items(self) -> AsyncGenerator:
         Display.info("Loading your inventory")
-        # Fetch all asset types from ITEM_TYPES
         all_user_items = []
         for asset_type_id in ITEM_TYPES.keys():
             items = await AssetsLoader(get_user_inventory, [asset_type_id]).load(self.auth)
@@ -493,7 +482,6 @@ class AutoSeller(ConfigLoader):
         Display.info(f"Found {len(all_user_items)} items. Checking them...")
         items_details = await AssetsLoader(get_items_details, item_ids, 120).load(self.auth)
 
-        # Build dict for quick lookup
         details_by_id = {str(d["id"]): d for d in items_details}
 
         for item_info, thumbnail in zip(all_user_items, items_thumbnails):
@@ -542,11 +530,21 @@ class AutoSeller(ConfigLoader):
                     asset_type_name=asset_type_name
                 )
                 self.add_item(item_obj)
+                item_obj._copy_counter = 0   # initialize copy counter
+
+            # Apply copy limit
+            if self.auto_sell_copies and self.max_copies_to_sell > 0:
+                if item_obj._copy_counter >= self.max_copies_to_sell:
+                    debug_print(f"Skipping extra copy of {item_obj.name} (limit {self.max_copies_to_sell})")
+                    continue
+
             item_obj.add_collectible(
                 serial=item["serialNumber"],
                 item_id=item["collectibleItemId"],
                 instance_id=item["collectibleItemInstanceId"]
             )
+            item_obj._copy_counter += 1
+
         debug_print(f"Loaded {len(self.items)} items after initial filter")
         if not self.items:
             Display.error("You dont have any limiteds that are not in blacklist")
