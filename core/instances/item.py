@@ -18,7 +18,7 @@ class Item:
                  "_creator_id", "creator_name", "_creator_link",
                  "recent_average_price", "has_resales", "latest_sale",
                  "has_sales", "price_to_sell", "auth", "_collectibles",
-                 "resales", "sales", "asset_type_name", "_copy_counter")   # added _copy_counter
+                 "resales", "sales", "asset_type_name", "_copy_counter")
 
     def __init__(
         self,
@@ -55,7 +55,7 @@ class Item:
         self.resales = []
         self.sales = []
         self.asset_type_name = asset_type_name
-        self._copy_counter = 0   # initialize counter
+        self._copy_counter = 0
 
     id = IgnoreNew()
     link = IgnoreNew()
