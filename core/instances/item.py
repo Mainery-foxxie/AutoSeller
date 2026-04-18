@@ -146,13 +146,14 @@ class Item:
         sold_amount = 0
         price_to_sell = (price or self.price_to_sell)
 
+        # Log total number of collectibles
+        print(f"[DEBUG] {self.name} has {len(self.collectibles)} collectible(s)")
+
         for col in self.collectibles:
             tries = 0
             if verbose:
-                print(f"[DEBUG] Collectible #{col.serial}: on_sale={col.on_sale}, "
-                      f"sale_price={col.sale_price}, item_id={col.item_id}, "
-                      f"instance_id={col.instance_id}, product_id={col.product_id}, "
-                      f"skip_on_sale={col.skip_on_sale}")
+                print(f"[DEBUG] Processing #{col.serial}: on_sale={col.on_sale}, "
+                      f"sale_price={col.sale_price}, skip={col.skip_on_sale}")
 
             if col.skip_on_sale:
                 if verbose:
