@@ -41,8 +41,8 @@ class ConfigLoader:
         self.keep_copy = auto_sell.get("Keep_Copy", 0)
         self.creators_blacklist = auto_sell.get("Creators_Blacklist", [])
         self.default_price_no_competition = auto_sell.get("Default_Price_No_Competition", 1000)
-        self.auto_sell_copies = auto_sell.get("Auto_Sell_Copies", False)          # NEW
-        self.max_copies_to_sell = auto_sell.get("Max_Copies_To_Sell", 0)          # NEW
+        self.auto_sell_copies = auto_sell.get("Auto_Sell_Copies", False)
+        self.max_copies_to_sell = auto_sell.get("Max_Copies_To_Sell", 0)
 
         under_cut = auto_sell["Under_Cut"]
         self.under_cut_type = under_cut.get("Type", "percent").strip()
