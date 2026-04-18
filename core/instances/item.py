@@ -294,15 +294,16 @@ class Item:
         cursor = ""
         while True:
             try:
-                async with self.auth.get(
-                    f"apis.roblox.com/marketplace-sales/v1/item/{self.item_id}/resellable-instances?"
-                    f"cursor={cursor}&ownerType=User&ownerId={self.auth.user_id}&limit=9999999"
-                ) as response:
+                url = f"apis.roblox.com/marketplace-sales/v1/item/{self.item_id}/resellable-instances?cursor={cursor}&ownerType=User&ownerId={self.auth.user_id}&limit=9999999"
+                print(f"[DEBUG] Fetching collectibles from {url}")
+                async with self.auth.get(url) as response:
                     if response.status != 200:
+                        print(f"[ERROR] fetch_collectibles returned {response.status} for {self.name}")
                         return None
                     data = await response.json()
+                    print(f"[DEBUG] fetch_collectibles response: {data}")
                     serials_list = []
-                    for instance in data.get("itemInstances"):
+                    for instance in data.get("itemInstances", []):
                         col_serial = instance["serialNumber"]
                         self.add_collectible(
                             serial=col_serial,
@@ -313,11 +314,12 @@ class Item:
                             product_id=instance["collectibleProductId"]
                         )
                         serials_list.append(col_serial)
+                    # Remove collectibles that are no longer in the list
                     for serial in list(self._collectibles):
                         if serial not in serials_list:
                             self.remove_collectible(serial)
                     cursor = data.get("nextPageCursor")
-                    if cursor == data.get("previousPageCursor"):
+                    if cursor == data.get("previousPageCursor") or not cursor:
                         return None
             except (asyncio.TimeoutError, aiohttp.ClientError) as e:
                 print(f"[WARN] Timeout fetching collectibles for {self.name}, retrying in 5 seconds...")
