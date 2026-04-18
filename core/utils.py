@@ -11,7 +11,6 @@ from .clients import ClientSession
 
 # ==================== RETRY DECORATOR ====================
 def retry_async(max_attempts: int = 3, delay: float = 1.0, backoff: float = 2.0):
-    """Decorator to retry an async function on exception."""
     def decorator(func):
         async def wrapper(*args, **kwargs):
             attempts = 0
@@ -33,7 +32,6 @@ def retry_async(max_attempts: int = 3, delay: float = 1.0, backoff: float = 2.0)
 
 
 class IgnoreNew:
-    """Descriptor that allows setting a value only once."""
     def __set_name__(self, _, name: str) -> None:
         self.name = f"_{name}"
 
@@ -47,7 +45,6 @@ class IgnoreNew:
 
 
 class WithBool:
-    """Context manager that sets a boolean flag."""
     def __init__(self) -> None:
         self.__bool = False
 
@@ -65,7 +62,6 @@ class WithBool:
 
 
 class AssetsLoader:
-    """Loads assets in batches asynchronously."""
     def __init__(self, func: callable, source: Iterable, batch_amount: Optional[int] = None):
         self.wrapped = func
         self.source = source
@@ -76,11 +72,12 @@ class AssetsLoader:
             asyncio.create_task(self.wrapped(s, *func_args, **func_kwargs))
             for s in slice_list(self.source, self.batch_amount)
         ]
-        return sum(await asyncio.gather(*tasks), [])
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        valid_results = [r for r in results if r is not None and not isinstance(r, Exception)]
+        return sum(valid_results, [])
 
 
 class FileSync(set):
-    """A set that automatically syncs to a JSON file on any modification."""
     def __init__(self, filename: str) -> None:
         self.filename = filename
         items = load_file(filename)
@@ -103,7 +100,6 @@ class FileSync(set):
 
 
 def slice_list(iterable: Iterable[Any], n: int) -> Iterable[Iterable[Any]]:
-    """Split an iterable into chunks of size n."""
     if not n:
         return iterable
     lst = list(iterable)
@@ -115,24 +111,18 @@ def define_status(flag: bool) -> str:
 
 
 def safe_json_write(data: Any, file_path: str) -> None:
-    """Atomically write JSON data to a file (creates directory if needed)."""
     os.makedirs(os.path.dirname(file_path), exist_ok=True)
     temp_path = file_path + ".tmp"
     with open(temp_path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4, ensure_ascii=False)
-    os.replace(temp_path, file_path)  # atomic on most OS
+    os.replace(temp_path, file_path)
 
 
 def load_file(file_path: str) -> Union[Dict, List]:
-    """
-    Load JSON file. Returns empty dict/list if file is missing or corrupted.
-    Creates default empty file if not exists.
-    """
     try:
         with open(file_path, "r", encoding="utf-8") as f:
             return json.load(f)
     except FileNotFoundError:
-        # Create default empty file
         default = {} if file_path.endswith(".json") and "config" in file_path else []
         safe_json_write(default, file_path)
         return default
@@ -148,7 +138,6 @@ def load_file(file_path: str) -> Union[Dict, List]:
 
 def define_sale_price(undercut_amount: int, undercut_type: Literal["amount", "percent"],
                       limit_price: int, lowest_price: int) -> int:
-    """Calculate final sale price after undercut, respecting minimum price floor."""
     def min_sale(price: int) -> int:
         profit = price // 2
         while (price // 2) >= profit:
@@ -157,7 +146,7 @@ def define_sale_price(undercut_amount: int, undercut_type: Literal["amount", "pe
 
     if undercut_type == "amount":
         final_price = lowest_price - undercut_amount
-    else:  # percent
+    else:
         final_price = round(lowest_price - (lowest_price / 100 * undercut_amount))
 
     final_price = min_sale(final_price)
@@ -166,7 +155,6 @@ def define_sale_price(undercut_amount: int, undercut_type: Literal["amount", "pe
 
 @retry_async(max_attempts=3, delay=1.0)
 async def is_webhook_exists(webhook_url: str) -> bool:
-    """Check if a Discord webhook URL is valid (with retries)."""
     if not WEBHOOK_PATTERN.match(webhook_url):
         return False
     async with ClientSession() as session:
@@ -177,7 +165,6 @@ async def is_webhook_exists(webhook_url: str) -> bool:
 
 @retry_async(max_attempts=2, delay=2.0)
 async def check_for_update(code_url: str, _version: str) -> bool:
-    """Check if a newer version is available (with retries)."""
     async with ClientSession() as session:
         async with session.get(code_url) as response:
             text = await response.text()
