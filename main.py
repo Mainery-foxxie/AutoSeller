@@ -530,12 +530,13 @@ class AutoSeller(ConfigLoader):
                     asset_type_name=asset_type_name
                 )
                 self.add_item(item_obj)
-                item_obj._copy_counter = 0   # initialize copy counter
+                item_obj._copy_counter = 0
 
-            # Apply copy limit
+            # Apply copy limit (0 means no limit)
             if self.auto_sell_copies and self.max_copies_to_sell > 0:
                 if item_obj._copy_counter >= self.max_copies_to_sell:
-                    debug_print(f"Skipping extra copy of {item_obj.name} (limit {self.max_copies_to_sell})")
+                    if item_obj._copy_counter == self.max_copies_to_sell:
+                        debug_print(f"Reached copy limit ({self.max_copies_to_sell}) for {item_obj.name}, skipping remaining copies")
                     continue
 
             item_obj.add_collectible(
