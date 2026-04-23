@@ -146,7 +146,6 @@ class Item:
         sold_amount = 0
         price_to_sell = (price or self.price_to_sell)
 
-        # Log total number of collectibles
         print(f"[DEBUG] {self.name} has {len(self.collectibles)} collectible(s)")
 
         for col in self.collectibles:
@@ -295,13 +294,19 @@ class Item:
         while True:
             try:
                 url = f"apis.roblox.com/marketplace-sales/v1/item/{self.item_id}/resellable-instances?cursor={cursor}&ownerType=User&ownerId={self.auth.user_id}&limit=9999999"
-                print(f"[DEBUG] Fetching collectibles from {url}")
+                print(f"[DEBUG] URL: {url}")
                 async with self.auth.get(url) as response:
+                    print(f"[DEBUG] Status: {response.status}")
+                    try:
+                        text = await response.text()
+                        print(f"[DEBUG] Raw response: {text[:500]}")
+                    except:
+                        print("[DEBUG] Could not read response text")
                     if response.status != 200:
-                        print(f"[ERROR] fetch_collectibles returned {response.status} for {self.name}")
+                        print(f"[ERROR] fetch_collectibles returned {response.status}")
                         return None
                     data = await response.json()
-                    print(f"[DEBUG] fetch_collectibles response: {data}")
+                    print(f"[DEBUG] JSON data keys: {data.keys() if isinstance(data, dict) else 'not dict'}")
                     serials_list = []
                     for instance in data.get("itemInstances", []):
                         col_serial = instance["serialNumber"]
@@ -321,8 +326,10 @@ class Item:
                     cursor = data.get("nextPageCursor")
                     if cursor == data.get("previousPageCursor") or not cursor:
                         return None
-            except (asyncio.TimeoutError, aiohttp.ClientError) as e:
-                print(f"[WARN] Timeout fetching collectibles for {self.name}, retrying in 5 seconds...")
+            except Exception as e:
+                print(f"[ERROR] Exception in fetch_collectibles: {e}")
+                import traceback
+                traceback.print_exc()
                 await asyncio.sleep(5)
                 continue
 
