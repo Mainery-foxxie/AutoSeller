@@ -129,6 +129,7 @@ class Item:
                 product_id=product_id
             )
 
+    # ==================== FIXED SELL_COLLECTIBLES (no fetch_collectibles) ====================
     @Auth.has_auth
     async def sell_collectibles(
         self,
@@ -138,7 +139,7 @@ class Item:
         verbose: bool = True,
         retries: int = 1
     ) -> Optional[int]:
-        await self.fetch_collectibles()
+        # Do NOT call fetch_collectibles() – collectibles were already added in _load_items
         if not self.collectibles:
             if verbose:
                 Display.error(f"No collectibles found for {self.name}. Skipping.")
@@ -158,16 +159,20 @@ class Item:
                 continue
             if None in (col.item_id, col.instance_id, col.product_id):
                 if verbose:
-                    Display.error(f"Collectible #{col.serial} missing IDs – cannot sell")
+                    Display.error(f"Collectible #{col.serial} missing required IDs – cannot sell")
                 continue
 
             tries = 0
             while True:
+                if verbose:
+                    Display.info(f"Attempting to sell #{col.serial} for {price_to_sell} Robux...")
                 response = await col.sell(price_to_sell, self.auth)
                 if response is None:
                     break
                 match response.status:
                     case 200:
+                        if verbose:
+                            Display.success(f"Successfully sold #{col.serial} for {price_to_sell} Robux")
                         sold_amount += 1
                         break
                     case 429:
@@ -178,16 +183,19 @@ class Item:
                     case 403:
                         raise Exception(f"403 Forbidden - price {price_to_sell} too low")
                     case 412:
+                        if verbose:
+                            Display.error(f"Precondition Failed (412) – cannot sell #{col.serial}. Skipping permanently.")
                         col.skip_on_sale = True
                         break
                     case _:
                         if verbose:
-                            Display.error(f"Failed to sell #{col.serial} (status {response.status})")
+                            Display.error(f"Failed to sell #{col.serial} (status {response.status}): {response.reason}")
                         tries += 1
                         await asyncio.sleep(3)
                 if tries > retries:
                     break
         return sold_amount
+    # =======================================================================================
 
     @Auth.has_auth
     async def fetch_sales(self, *,
@@ -269,7 +277,6 @@ class Item:
                             pass
                         return None
                     data = await response.json()
-                    # Print the full response when empty or for debugging
                     if not data.get("itemInstances"):
                         print(f"[DEBUG] Full response for {self.name}: {json.dumps(data, indent=2)}")
                     serials_list = []
