@@ -1,7 +1,7 @@
 from typing import Optional, NoReturn, Union, List
 
-from ...visuals import Display
-from ...utils import is_webhook_exists
+from ..visuals import Display
+from ..utils import is_webhook_exists
 
 __all__ = ("ConfigLoader",)
 
