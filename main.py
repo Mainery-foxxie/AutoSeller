@@ -8,7 +8,6 @@ import random
 import json
 from traceback import format_exc
 
-# ========== DEBUG MODE (controlled by config.json) ==========
 DEBUG = True
 PURPLE = '\033[95m'
 RESET = '\033[0m'
@@ -16,7 +15,6 @@ RESET = '\033[0m'
 def debug_print(*args, **kwargs):
     if DEBUG:
         print(PURPLE, "[DEBUG]", *args, RESET, **kwargs)
-# =============================================================
 
 __import__("warnings").filterwarnings("ignore")
 
@@ -265,7 +263,7 @@ class AutoSeller(ConfigLoader):
         return None
     # ==================================================
 
-    # ========== IMPROVED SELL_ITEM WITH RELIST LOGIC ==========
+    # ========== IMPROVED SELL_ITEM WITH CLEAN LOGGING ==========
     async def sell_item(self):
         item = self.current
         debug_print(f"Selling item: {item.name} (ID {item.id})")
@@ -326,12 +324,14 @@ class AutoSeller(ConfigLoader):
                 sold_amount = await item.sell_collectibles(
                     skip_on_sale=self.skip_on_sale,
                     skip_if_cheapest=self.skip_if_cheapest,
-                    verbose=True
+                    verbose=False   # reduce spam
                 )
                 if sold_amount is not None and sold_amount > 0:
                     self.total_sold += sold_amount
                     if self.sale_webhook:
                         asyncio.create_task(self.send_sale_webhook(item, sold_amount))
+                    # Clean log output
+                    print(f"[TTL] Sold {item.name} #{item.collectibles[0].serial if item.collectibles else '??'} at {item.price_to_sell} Robux")
                     break
                 else:
                     break
@@ -378,7 +378,17 @@ class AutoSeller(ConfigLoader):
         self._items = dict(sorted(self._items.items(), key=lambda x: getattr(x[1], _type)))
 
     async def start(self):
-        await asyncio.gather(self.auth.fetch_csrf_token(), self.handle_exceptions())
+        # Retry CSRF token fetch up to 3 times
+        for attempt in range(3):
+            try:
+                await self.auth.fetch_csrf_token()
+                break
+            except Exception as e:
+                if attempt == 2:
+                    return Display.exception(f"Failed to fetch CSRF token after 3 attempts: {e}")
+                print(f"[WARN] CSRF token attempt {attempt+1} failed: {e}. Retrying...")
+                await asyncio.sleep(5)
+        await self.handle_exceptions()
         Display.info("Checking cookie to be valid")
         if await self.auth.fetch_user_info() is None:
             return Display.exception("Invalid cookie provided")
@@ -546,6 +556,13 @@ class AutoSeller(ConfigLoader):
             )
             item_obj._copy_counter += 1
 
+        # Apply keep_serials (now a list)
+        if self.keep_serials and isinstance(self.keep_serials, list):
+            for item in self.items:
+                for col in list(item.collectibles):
+                    if col.serial not in self.keep_serials:
+                        col.skip_on_sale = True
+
         debug_print(f"Loaded {len(self.items)} items after initial filter")
         if not self.items:
             Display.error("You dont have any limiteds that are not in blacklist")
@@ -554,18 +571,15 @@ class AutoSeller(ConfigLoader):
                 self.seen.clear()
                 Display.success("Cleared your limiteds selling progress")
                 Tools.exit_program()
-        if self.keep_serials or self.keep_copy:
+        if self.keep_copy:
             for item in self.items:
                 if len(item.collectibles) <= self.keep_copy:
                     self.remove_item(item.id)
                     continue
-                for col in item.collectibles:
-                    if col.serial > self.keep_serials:
-                        col.skip_on_sale = True
         if not self.items:
             not_met = []
             if self.keep_copy: not_met.append(f"{self.keep_copy} copies or higher")
-            if self.keep_serials: not_met.append(f"{self.keep_serials} serial or higher")
+            if self.keep_serials: not_met.append(f"serials not in {self.keep_serials}")
             return Display.exception(f"You dont have any limiteds with {', '.join(not_met)}")
         self.loaded_time = datetime.now()
         debug_print(f"Items loaded at {self.loaded_time}. Ready to sell.")
@@ -601,11 +615,15 @@ class AutoSeller(ConfigLoader):
                               title="A New Item Went on Sale", url=item.link)
         embed.set_footer(text="Were sold at")
         data = {"content": self.user_to_ping, "embeds": [embed.to_dict()]}
-        async with ClientSession() as session:
-            async with session.post(self.sale_webhook_url, json=data) as response:
+        try:
+            async with self.auth.post(self.sale_webhook_url, json=data) as response:
                 if response.status == 429:
                     await asyncio.sleep(30)
                     await self.send_sale_webhook(item, sold_amount)
+                elif response.status != 204:
+                    debug_print(f"Webhook error: {response.status}")
+        except Exception as e:
+            debug_print(f"Webhook failed: {e}")
 
     async def __aenter__(self):
         return self
