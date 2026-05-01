@@ -72,13 +72,17 @@ class Collectible:
             "sellerType": "User"
         }
 
-        async with auth.patch(
-            f"apis.roblox.com/marketplace-sales/v1/item/{self.item_id}/instance/{self.instance_id}/resale",
-            json=payload
-        ) as response:
+        url = f"apis.roblox.com/marketplace-sales/v1/item/{self.item_id}/instance/{self.instance_id}/resale"
+        print(f"[DEBUG] PATCH {url} with payload {payload}")
+        async with auth.patch(url, json=payload) as response:
+            print(f"[DEBUG] Sell response status: {response.status}")
+            try:
+                text = await response.text()
+                print(f"[DEBUG] Sell response body: {text[:200]}")
+            except:
+                pass
             if response.status == 200:
                 self.on_sale = True
-
             return response
 
     async def take_off_sale(self, auth: Auth) -> Optional[int]:
@@ -98,5 +102,4 @@ class Collectible:
         ) as response:
             if response.status == 200:
                 self.on_sale = False
-
             return response.status
