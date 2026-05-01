@@ -256,8 +256,17 @@ class Item:
         while True:
             try:
                 url = f"apis.roblox.com/marketplace-sales/v1/item/{self.item_id}/resellable-instances?cursor={cursor}&ownerType=User&ownerId={self.auth.user_id}&limit=9999999"
+                print(f"[DEBUG] Fetching collectibles from {url}")
                 async with self.auth.get(url) as response:
+                    print(f"[DEBUG] Status: {response.status}")
                     if response.status != 200:
+                        print(f"[ERROR] fetch_collectibles returned {response.status} for {self.name}")
+                        # Try to read error text
+                        try:
+                            error_text = await response.text()
+                            print(f"[ERROR] Response: {error_text[:200]}")
+                        except:
+                            pass
                         return None
                     data = await response.json()
                     serials_list = []
