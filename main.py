@@ -263,7 +263,7 @@ class AutoSeller(ConfigLoader):
         return None
     # ==================================================
 
-    # ========== IMPROVED SELL_ITEM WITH CLEAN LOGGING ==========
+    # ========== IMPROVED SELL_ITEM ==========
     async def sell_item(self):
         item = self.current
         debug_print(f"Selling item: {item.name} (ID {item.id})")
@@ -324,16 +324,19 @@ class AutoSeller(ConfigLoader):
                 sold_amount = await item.sell_collectibles(
                     skip_on_sale=self.skip_on_sale,
                     skip_if_cheapest=self.skip_if_cheapest,
-                    verbose=False   # reduce spam
+                    verbose=False
                 )
                 if sold_amount is not None and sold_amount > 0:
                     self.total_sold += sold_amount
                     if self.sale_webhook:
                         asyncio.create_task(self.send_sale_webhook(item, sold_amount))
-                    # Clean log output
-                    print(f"[TTL] Sold {item.name} #{item.collectibles[0].serial if item.collectibles else '??'} at {item.price_to_sell} Robux")
+                    # Clean output
+                    serial_str = f"#{item.collectibles[0].serial}" if item.collectibles else ""
+                    print(f"[TTL] Sold {item.name} {serial_str} at {item.price_to_sell} Robux")
                     break
                 else:
+                    if sold_amount == 0:
+                        debug_print(f"No sale occurred for {item.name}. Moving to next item.")
                     break
             except Exception as e:
                 error_msg = str(e).lower()
@@ -414,7 +417,7 @@ class AutoSeller(ConfigLoader):
                 await asyncio.gather(*filter(None, tasks))
         except LoginFailure:
             return Display.exception("Invalid discord token provided")
-        except:
+        except Exception as e:
             return Display.exception(f"Unknown error occurred:\n\n{format_exc()}")
 
     async def start_selling(self):
@@ -556,12 +559,13 @@ class AutoSeller(ConfigLoader):
             )
             item_obj._copy_counter += 1
 
-        # Apply keep_serials (now a list)
-        if self.keep_serials and isinstance(self.keep_serials, list):
+        # Apply keep_serials – do NOT sell the serials listed (keep them)
+        if self.keep_serials:
             for item in self.items:
                 for col in list(item.collectibles):
-                    if col.serial not in self.keep_serials:
+                    if col.serial in self.keep_serials:
                         col.skip_on_sale = True
+                        debug_print(f"Keeping serial #{col.serial} of {item.name} (in keep list)")
 
         debug_print(f"Loaded {len(self.items)} items after initial filter")
         if not self.items:
@@ -655,7 +659,7 @@ async def main() -> None:
 
     try:
         await auto_seller.start()
-    except:
+    except Exception as e:
         return Display.exception(f"Unknown error occurred:\n\n{format_exc()}")
 
 if __name__ == "__main__":
