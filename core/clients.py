@@ -12,7 +12,7 @@ __all__ = ("ClientSession", "Auth")
 
 
 class ClientSession(aiohttp.ClientSession):
-    def __init__(self, base_url: Optional[str] = None, timeout: int = 30, **kwargs):
+    def __init__(self, base_url: Optional[str] = None, timeout: int = 60, **kwargs):
         kwargs.update({
             "connector": aiohttp.TCPConnector(limit=None, ssl=False),
             "trust_env": True,
@@ -41,13 +41,22 @@ class Auth(ClientSession):
     async def close_session(self):
         await self.close()
 
-    async def fetch_csrf_token(self, csrf_token: Optional[str] = None) -> None:
+    async def fetch_csrf_token(self, csrf_token: Optional[str] = None, retries: int = 3) -> None:
         if csrf_token is None:
             self.headers.pop("x-csrf-token", None)
-            async with self.post("auth.roblox.com/v1/login") as response:
-                csrf_token = response.headers.get("x-csrf-token")
-                if csrf_token is None:
-                    Display.exception("Failed to get csrf token")
+            for attempt in range(retries):
+                try:
+                    async with self.post("auth.roblox.com/v1/login") as response:
+                        csrf_token = response.headers.get("x-csrf-token")
+                        if csrf_token is None:
+                            Display.exception("Failed to get csrf token")
+                        else:
+                            break
+                except (asyncio.TimeoutError, aiohttp.ClientError) as e:
+                    if attempt == retries - 1:
+                        raise
+                    print(f"[WARN] CSRF token attempt {attempt+1} failed: {e}. Retrying in 5s...")
+                    await asyncio.sleep(5)
         self.headers.update({"x-csrf-token": csrf_token})
 
     async def fetch_user_info(self) -> Optional[int]:
