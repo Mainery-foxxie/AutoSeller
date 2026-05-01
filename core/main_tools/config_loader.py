@@ -1,4 +1,4 @@
-from typing import Optional, NoReturn, Union, List
+from typing import Optional, NoReturn
 
 from ..visuals import Display
 from ..utils import is_webhook_exists
@@ -37,10 +37,7 @@ class ConfigLoader:
         self.skip_on_sale = auto_sell.get("Hide_OnSale", False)
         self.skip_if_cheapest = auto_sell.get("Skip_If_Cheapest", False)
         self.sort_items_by = auto_sell.get("Sort_Items_By", "name")
-        keep_serials_raw = auto_sell.get("Keep_Serials", [])
-        if isinstance(keep_serials_raw, int):
-            keep_serials_raw = [keep_serials_raw]
-        self.keep_serials = keep_serials_raw
+        self.keep_serials = auto_sell.get("Keep_Serials", 0)
         self.keep_copy = auto_sell.get("Keep_Copy", 0)
         self.creators_blacklist = auto_sell.get("Creators_Blacklist", [])
         self.default_price_no_competition = auto_sell.get("Default_Price_No_Competition", 1000)
