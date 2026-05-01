@@ -1,5 +1,6 @@
 import asyncio
 import aiohttp
+import json
 from datetime import datetime
 
 from typing import Optional, List, Any, Union
@@ -261,7 +262,6 @@ class Item:
                     print(f"[DEBUG] Status: {response.status}")
                     if response.status != 200:
                         print(f"[ERROR] fetch_collectibles returned {response.status} for {self.name}")
-                        # Try to read error text
                         try:
                             error_text = await response.text()
                             print(f"[ERROR] Response: {error_text[:200]}")
@@ -269,6 +269,9 @@ class Item:
                             pass
                         return None
                     data = await response.json()
+                    # Print the full response when empty or for debugging
+                    if not data.get("itemInstances"):
+                        print(f"[DEBUG] Full response for {self.name}: {json.dumps(data, indent=2)}")
                     serials_list = []
                     for instance in data.get("itemInstances", []):
                         col_serial = instance["serialNumber"]
@@ -281,6 +284,7 @@ class Item:
                             product_id=instance["collectibleProductId"]
                         )
                         serials_list.append(col_serial)
+                    print(f"[DEBUG] Found {len(serials_list)} collectible instances for {self.name}")
                     for serial in list(self._collectibles):
                         if serial not in serials_list:
                             self.remove_collectible(serial)
